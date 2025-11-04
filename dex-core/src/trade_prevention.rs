@@ -6,7 +6,7 @@
 //! It provides functionality for preventing duplicate trades using a hash set
 //! to track already processed trades.
 
-use crate::types::{TradeId, TraderId, TokenId};
+use crate::types::{TokenId, TradeId, TraderId};
 use std::collections::HashSet;
 use thiserror::Error;
 
@@ -56,24 +56,34 @@ impl DuplicateTradePrevention {
     }
 
     /// Add a trade to the processed set
-    pub fn add_processed_trade(&mut self, trade: ProcessedTrade) -> Result<(), DuplicateTradeError> {
+    pub fn add_processed_trade(
+        &mut self,
+        trade: ProcessedTrade,
+    ) -> Result<(), DuplicateTradeError> {
         // Check if trade ID already exists
         if self.processed_trade_ids.contains(&trade.trade_id) {
             return Err(DuplicateTradeError::TradeAlreadyProcessed);
         }
-        
+
         // Add to both sets
         self.processed_trades.insert(trade.clone());
         self.processed_trade_ids.insert(trade.trade_id);
-        
+
         Ok(())
     }
 
     /// Remove a trade from the processed set (in case of rollback or correction)
-    pub fn remove_processed_trade(&mut self, trade_id: TradeId) -> Result<ProcessedTrade, DuplicateTradeError> {
+    pub fn remove_processed_trade(
+        &mut self,
+        trade_id: TradeId,
+    ) -> Result<ProcessedTrade, DuplicateTradeError> {
         // Find the trade with this ID
-        let trade = self.processed_trades.iter().find(|t| t.trade_id == trade_id).cloned();
-        
+        let trade = self
+            .processed_trades
+            .iter()
+            .find(|t| t.trade_id == trade_id)
+            .cloned();
+
         if let Some(trade) = trade {
             // Remove from both sets
             self.processed_trades.remove(&trade);
@@ -114,7 +124,11 @@ impl DuplicateTradePrevention {
     }
 
     /// Get processed trades for a specific token pair
-    pub fn get_trades_for_token_pair(&self, base_token: &TokenId, quote_token: &TokenId) -> Vec<&ProcessedTrade> {
+    pub fn get_trades_for_token_pair(
+        &self,
+        base_token: &TokenId,
+        quote_token: &TokenId,
+    ) -> Vec<&ProcessedTrade> {
         self.processed_trades
             .iter()
             .filter(|trade| &trade.base_token == base_token && &trade.quote_token == quote_token)
@@ -154,7 +168,7 @@ mod tests {
     #[test]
     fn test_add_and_check_processed_trade() {
         let mut prevention = DuplicateTradePrevention::new();
-        
+
         let trade = ProcessedTrade {
             trade_id: 1,
             trader_id: "trader1".to_string(),
@@ -163,14 +177,14 @@ mod tests {
             price: 50000,
             quantity: 1000,
         };
-        
+
         // Initially, trade should not be processed
         assert!(!prevention.is_trade_processed(1));
         assert!(!prevention.is_trade_details_processed(&trade));
-        
+
         // Add the trade
         assert!(prevention.add_processed_trade(trade.clone()).is_ok());
-        
+
         // Now the trade should be marked as processed
         assert!(prevention.is_trade_processed(1));
         assert!(prevention.is_trade_details_processed(&trade));
@@ -181,7 +195,7 @@ mod tests {
     #[test]
     fn test_prevent_duplicate_trades() {
         let mut prevention = DuplicateTradePrevention::new();
-        
+
         let trade = ProcessedTrade {
             trade_id: 1,
             trader_id: "trader1".to_string(),
@@ -190,13 +204,13 @@ mod tests {
             price: 50000,
             quantity: 1000,
         };
-        
+
         // Add the trade for the first time
         assert!(prevention.add_processed_trade(trade.clone()).is_ok());
-        
+
         // Try to add the same trade again (should fail)
         assert!(prevention.add_processed_trade(trade.clone()).is_err());
-        
+
         // Trade count should still be 1
         assert_eq!(prevention.processed_trade_count(), 1);
     }
@@ -204,7 +218,7 @@ mod tests {
     #[test]
     fn test_remove_processed_trade() {
         let mut prevention = DuplicateTradePrevention::new();
-        
+
         let trade = ProcessedTrade {
             trade_id: 1,
             trader_id: "trader1".to_string(),
@@ -213,17 +227,17 @@ mod tests {
             price: 50000,
             quantity: 1000,
         };
-        
+
         // Add the trade
         prevention.add_processed_trade(trade.clone()).unwrap();
         assert_eq!(prevention.processed_trade_count(), 1);
-        
+
         // Remove the trade
         let removed_trade = prevention.remove_processed_trade(1).unwrap();
         assert_eq!(removed_trade, trade);
         assert_eq!(prevention.processed_trade_count(), 0);
         assert!(!prevention.is_trade_processed(1));
-        
+
         // Try to remove the same trade again (should fail)
         assert!(prevention.remove_processed_trade(1).is_err());
     }
@@ -231,7 +245,7 @@ mod tests {
     #[test]
     fn test_get_trades_for_trader() {
         let mut prevention = DuplicateTradePrevention::new();
-        
+
         // Add trades for different traders
         let trade1 = ProcessedTrade {
             trade_id: 1,
@@ -241,7 +255,7 @@ mod tests {
             price: 50000,
             quantity: 1000,
         };
-        
+
         let trade2 = ProcessedTrade {
             trade_id: 2,
             trader_id: "trader2".to_string(),
@@ -250,7 +264,7 @@ mod tests {
             price: 3000,
             quantity: 5000,
         };
-        
+
         let trade3 = ProcessedTrade {
             trade_id: 3,
             trader_id: "trader1".to_string(),
@@ -259,15 +273,15 @@ mod tests {
             price: 51000,
             quantity: 2000,
         };
-        
+
         prevention.add_processed_trade(trade1.clone()).unwrap();
         prevention.add_processed_trade(trade2.clone()).unwrap();
         prevention.add_processed_trade(trade3.clone()).unwrap();
-        
+
         // Get trades for trader1
         let trader1_trades = prevention.get_trades_for_trader(&"trader1".to_string());
         assert_eq!(trader1_trades.len(), 2);
-        
+
         // Get trades for trader2
         let trader2_trades = prevention.get_trades_for_trader(&"trader2".to_string());
         assert_eq!(trader2_trades.len(), 1);
@@ -277,7 +291,7 @@ mod tests {
     #[test]
     fn test_get_trades_for_token_pair() {
         let mut prevention = DuplicateTradePrevention::new();
-        
+
         // Add trades for different token pairs
         let trade1 = ProcessedTrade {
             trade_id: 1,
@@ -287,7 +301,7 @@ mod tests {
             price: 50000,
             quantity: 1000,
         };
-        
+
         let trade2 = ProcessedTrade {
             trade_id: 2,
             trader_id: "trader2".to_string(),
@@ -296,7 +310,7 @@ mod tests {
             price: 3000,
             quantity: 5000,
         };
-        
+
         let trade3 = ProcessedTrade {
             trade_id: 3,
             trader_id: "trader3".to_string(),
@@ -305,17 +319,19 @@ mod tests {
             price: 51000,
             quantity: 2000,
         };
-        
+
         prevention.add_processed_trade(trade1.clone()).unwrap();
         prevention.add_processed_trade(trade2.clone()).unwrap();
         prevention.add_processed_trade(trade3.clone()).unwrap();
-        
+
         // Get trades for BTC/USDC pair
-        let btc_usdc_trades = prevention.get_trades_for_token_pair(&"BTC".to_string(), &"USDC".to_string());
+        let btc_usdc_trades =
+            prevention.get_trades_for_token_pair(&"BTC".to_string(), &"USDC".to_string());
         assert_eq!(btc_usdc_trades.len(), 2);
-        
+
         // Get trades for ETH/USDC pair
-        let eth_usdc_trades = prevention.get_trades_for_token_pair(&"ETH".to_string(), &"USDC".to_string());
+        let eth_usdc_trades =
+            prevention.get_trades_for_token_pair(&"ETH".to_string(), &"USDC".to_string());
         assert_eq!(eth_usdc_trades.len(), 1);
         assert_eq!(eth_usdc_trades[0].trade_id, 2);
     }
@@ -323,7 +339,7 @@ mod tests {
     #[test]
     fn test_clear_processed_trades() {
         let mut prevention = DuplicateTradePrevention::new();
-        
+
         let trade = ProcessedTrade {
             trade_id: 1,
             trader_id: "trader1".to_string(),
@@ -332,10 +348,10 @@ mod tests {
             price: 50000,
             quantity: 1000,
         };
-        
+
         prevention.add_processed_trade(trade.clone()).unwrap();
         assert_eq!(prevention.processed_trade_count(), 1);
-        
+
         // Clear all processed trades
         prevention.clear_processed_trades();
         assert_eq!(prevention.processed_trade_count(), 0);
@@ -346,7 +362,7 @@ mod tests {
     #[test]
     fn test_memory_usage_estimate() {
         let mut prevention = DuplicateTradePrevention::new();
-        
+
         let trade = ProcessedTrade {
             trade_id: 1,
             trader_id: "trader1".to_string(),
@@ -355,9 +371,9 @@ mod tests {
             price: 50000,
             quantity: 1000,
         };
-        
+
         assert_eq!(prevention.memory_usage_estimate(), 0);
-        
+
         prevention.add_processed_trade(trade.clone()).unwrap();
         let estimate = prevention.memory_usage_estimate();
         assert!(estimate > 0);

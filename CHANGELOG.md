@@ -1,5 +1,92 @@
 # DEX-OS Change Log
 
+# [0.3.3] - 2025-11-05
+
+### Added
+- Token issuance surface that covers three flows:
+  * `/auth/token/shared` validates per-trader shared secrets defined via `TRADER_SECRETS`.
+  * `/auth/challenge` + `/auth/token/wallet` provide a challenge/response handshake for wallet signatures.
+  * `cargo run -p dex-api --bin issue_token -- --trader-id ...` CLI helper mints short-lived JWTs directly.
+- Market depth REST endpoint (`/orderbook/depth`) and live WebSocket feed (`/ws/depth`) with broadcast updates after each orderbook mutation.
+- Config knobs for JWT issuer/TTL, wallet challenge TTL, and secret parsing with helpful validation errors.
+- Frontend auth helpers that call the new endpoints so users can mint tokens by secret or wallet signature without leaving the UI.
+
+### Changed
+- `AuthManager` can now sign tokens (encoding key + issuance helpers) while the UI persists issued tokens automatically.
+- Session panel in `dex-ui` was redesigned to surface token issuance tools alongside wallet/JWT fields.
+
+### Security
+- Wallet challenges are single-use, time-boxed, and verified with `personal_sign`/secp256k1 recovery to avoid replay.
+
+## [0.3.2] - 2025-11-04
+
+### Added
+- Implementation of Concentrated Liquidity with Tick-based Positioning for AMM
+  * Added Tick struct for representing price levels in concentrated liquidity
+  * Implemented add_liquidity_concentrated and remove_liquidity_concentrated functions
+  * Added functionality to get liquidity at specific ticks
+  * Added functionality to get all active ticks with liquidity
+  * Comprehensive tests for concentrated liquidity functionality
+- Enhanced AMM implementation with tick-based liquidity positioning
+  * This implements the Priority 1 feature from DEX-OS-V1.csv:
+    "Core Trading,AMM,AMM,Concentrated Liquidity,Tick-based Positioning,High"
+
+### Changed
+- Extended ConstantProductAMM struct with tick-based liquidity positioning
+- Updated DEX-OS-V1.csv to mark Concentrated Liquidity Tick-based Positioning as implemented
+
+### Deprecated
+- N/A
+
+### Removed
+- N/A
+
+### Fixed
+- N/A
+
+### Security
+- N/A
+
+## [0.3.1] - 2025-11-04
+
+### Added
+- Complete implementation of all Priority 1 Orderbook features from DEX-OS-V1.csv:
+  * Price-Time Priority Order Matching
+  * Vector Order Queue
+  * Red-Black Tree Price Level Storage
+  * Heap Time Priority Queue
+  * Queue Transaction Mempool
+- Enhanced orderbook implementation with proper price-time priority matching
+  * Implemented price priority matching for buy/sell orders
+  * Implemented time priority (FIFO) matching within same price levels
+  * Added comprehensive tests for price-time priority matching
+- Enhanced orderbook data structures:
+  * Vector-based order queue implementation for order storage
+  * Proper price level management using BTreeMap (Red-Black Tree)
+  * Explicit implementation of Vector Order Queue as specified in DEX-OS-V1.csv
+  * Heap-based Time Priority Queue for efficient order processing
+  * Queue-based Transaction Mempool for pending transactions
+- New functionality for time-based order processing using BinaryHeap (min-heap)
+- New functionality for transaction mempool using VecDeque (FIFO queue)
+
+### Changed
+- Improved orderbook matching algorithm to correctly implement price-time priority
+- Enhanced orderbook tests with specific price-time priority verification
+- Updated DEX-OS-V1.csv to mark all Priority 1 Orderbook features as implemented
+- Updated documentation to clearly reference the algorithms from DEX-OS-V1.csv
+
+### Deprecated
+- N/A
+
+### Removed
+- N/A
+
+### Fixed
+- N/A
+
+### Security
+- N/A
+
 ## [0.3.0] - 2025-11-03
 
 ### Added

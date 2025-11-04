@@ -6,7 +6,7 @@
 //! It provides functionality for secure asset custody using multi-signature wallets,
 //! which require multiple parties to sign transactions before they can be executed.
 
-use crate::types::{TraderId, TokenId, Quantity};
+use crate::types::{Quantity, TokenId, TraderId};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -47,17 +47,17 @@ impl MultiSigTransaction {
     pub fn is_ready_for_execution(&self) -> bool {
         self.signatures.len() >= self.required_signatures && self.executed_timestamp.is_none()
     }
-    
+
     /// Check if the transaction has been executed
     pub fn is_executed(&self) -> bool {
         self.executed_timestamp.is_some()
     }
-    
+
     /// Add a signature to the transaction
     pub fn add_signature(&mut self, participant_id: TraderId) {
         self.signatures.insert(participant_id);
     }
-    
+
     /// Check if a participant has signed the transaction
     pub fn has_signature_from(&self, participant_id: &TraderId) -> bool {
         self.signatures.contains(participant_id)
@@ -85,22 +85,26 @@ pub struct MultiSigWallet {
 
 impl MultiSigWallet {
     /// Create a new multi-signature wallet
-    pub fn new(wallet_id: String, participants: Vec<WalletParticipant>, required_signatures: usize) -> Result<Self, MultiSigError> {
+    pub fn new(
+        wallet_id: String,
+        participants: Vec<WalletParticipant>,
+        required_signatures: usize,
+    ) -> Result<Self, MultiSigError> {
         // Validate inputs
         if participants.is_empty() {
             return Err(MultiSigError::NoParticipants);
         }
-        
+
         if required_signatures == 0 {
             return Err(MultiSigError::InvalidRequiredSignatures);
         }
-        
+
         if required_signatures > participants.len() {
             return Err(MultiSigError::InvalidRequiredSignatures);
         }
-        
+
         let participant_set: HashSet<WalletParticipant> = participants.into_iter().collect();
-        
+
         Ok(Self {
             wallet_id,
             participants: participant_set,
@@ -111,48 +115,53 @@ impl MultiSigWallet {
             transaction_counter: 0,
         })
     }
-    
+
     /// Get the number of participants in the wallet
     pub fn participant_count(&self) -> usize {
         self.participants.len()
     }
-    
+
     /// Check if a participant is part of the wallet
     pub fn is_participant(&self, participant_id: &TraderId) -> bool {
         self.participants.iter().any(|p| &p.id == participant_id)
     }
-    
+
     /// Add assets to the wallet
     pub fn deposit(&mut self, token_id: TokenId, amount: Quantity) {
         let current_amount = self.assets.get(&token_id).copied().unwrap_or(0);
         self.assets.insert(token_id, current_amount + amount);
     }
-    
+
     /// Get the balance of a specific token in the wallet
     pub fn get_balance(&self, token_id: &TokenId) -> Quantity {
         self.assets.get(token_id).copied().unwrap_or(0)
     }
-    
+
     /// Get all asset balances
     pub fn get_all_balances(&self) -> &HashMap<TokenId, Quantity> {
         &self.assets
     }
-    
+
     /// Create a new transaction
-    pub fn create_transaction(&mut self, to_address: String, token_id: TokenId, amount: Quantity) -> Result<u64, MultiSigError> {
+    pub fn create_transaction(
+        &mut self,
+        to_address: String,
+        token_id: TokenId,
+        amount: Quantity,
+    ) -> Result<u64, MultiSigError> {
         // Check if the wallet has sufficient balance
         let balance = self.get_balance(&token_id);
         if amount > balance {
             return Err(MultiSigError::InsufficientFunds);
         }
-        
+
         // Deduct the amount from the wallet's balance (it's now locked for this transaction)
         self.assets.insert(token_id.clone(), balance - amount);
-        
+
         // Generate a new transaction ID
         self.transaction_counter += 1;
         let transaction_id = self.transaction_counter;
-        
+
         // Create the transaction
         let transaction = MultiSigTransaction {
             id: transaction_id,
@@ -168,116 +177,132 @@ impl MultiSigWallet {
                 .as_secs(),
             executed_timestamp: None,
         };
-        
+
         // Add to pending transactions
-        self.pending_transactions.insert(transaction_id, transaction);
-        
+        self.pending_transactions
+            .insert(transaction_id, transaction);
+
         Ok(transaction_id)
     }
-    
+
     /// Sign a transaction
-    pub fn sign_transaction(&mut self, transaction_id: u64, participant_id: TraderId) -> Result<(), MultiSigError> {
+    pub fn sign_transaction(
+        &mut self,
+        transaction_id: u64,
+        participant_id: TraderId,
+    ) -> Result<(), MultiSigError> {
         // Check if the participant is part of the wallet
         if !self.is_participant(&participant_id) {
             return Err(MultiSigError::NotParticipant);
         }
-        
+
         // Check if the transaction exists and is pending
-        let transaction = self.pending_transactions.get_mut(&transaction_id)
+        let transaction = self
+            .pending_transactions
+            .get_mut(&transaction_id)
             .ok_or(MultiSigError::TransactionNotFound)?;
-        
+
         // Check if the transaction has already been executed
         if transaction.is_executed() {
             return Err(MultiSigError::TransactionAlreadyExecuted);
         }
-        
+
         // Add the signature
         transaction.add_signature(participant_id);
-        
+
         Ok(())
     }
-    
+
     /// Execute a transaction if it has enough signatures
     pub fn execute_transaction(&mut self, transaction_id: u64) -> Result<(), MultiSigError> {
         // Check if the transaction exists and is pending
-        let mut transaction = self.pending_transactions.remove(&transaction_id)
+        let mut transaction = self
+            .pending_transactions
+            .remove(&transaction_id)
             .ok_or(MultiSigError::TransactionNotFound)?
             .clone();
-        
+
         // Check if the transaction has already been executed
         if transaction.is_executed() {
             return Err(MultiSigError::TransactionAlreadyExecuted);
         }
-        
+
         // Check if the transaction has enough signatures
         if !transaction.is_ready_for_execution() {
             // Put it back as pending
-            self.pending_transactions.insert(transaction_id, transaction);
+            self.pending_transactions
+                .insert(transaction_id, transaction);
             return Err(MultiSigError::InsufficientSignatures);
         }
-        
+
         // Mark the transaction as executed
         transaction.executed_timestamp = Some(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_secs()
+                .as_secs(),
         );
-        
+
         // Move to executed transactions
-        self.executed_transactions.insert(transaction_id, transaction);
-        
+        self.executed_transactions
+            .insert(transaction_id, transaction);
+
         Ok(())
     }
-    
+
     /// Get a pending transaction
     pub fn get_pending_transaction(&self, transaction_id: u64) -> Option<&MultiSigTransaction> {
         self.pending_transactions.get(&transaction_id)
     }
-    
+
     /// Get an executed transaction
     pub fn get_executed_transaction(&self, transaction_id: u64) -> Option<&MultiSigTransaction> {
         self.executed_transactions.get(&transaction_id)
     }
-    
+
     /// Get all pending transactions
     pub fn get_pending_transactions(&self) -> Vec<&MultiSigTransaction> {
         self.pending_transactions.values().collect()
     }
-    
+
     /// Get all executed transactions
     pub fn get_executed_transactions(&self) -> Vec<&MultiSigTransaction> {
         self.executed_transactions.values().collect()
     }
-    
+
     /// Get the number of pending transactions
     pub fn pending_transaction_count(&self) -> usize {
         self.pending_transactions.len()
     }
-    
+
     /// Get the number of executed transactions
     pub fn executed_transaction_count(&self) -> usize {
         self.executed_transactions.len()
     }
-    
+
     /// Cancel a pending transaction (return funds to wallet)
     pub fn cancel_transaction(&mut self, transaction_id: u64) -> Result<(), MultiSigError> {
         // Check if the transaction exists and is pending
-        let transaction = self.pending_transactions.remove(&transaction_id)
+        let transaction = self
+            .pending_transactions
+            .remove(&transaction_id)
             .ok_or(MultiSigError::TransactionNotFound)?;
-        
+
         // Check if the transaction has already been executed
         if transaction.is_executed() {
             return Err(MultiSigError::TransactionAlreadyExecuted);
         }
-        
+
         // Return the funds to the wallet
         let current_balance = self.get_balance(&transaction.token_id);
-        self.assets.insert(transaction.token_id.clone(), current_balance + transaction.amount);
-        
+        self.assets.insert(
+            transaction.token_id.clone(),
+            current_balance + transaction.amount,
+        );
+
         // Note: In a real implementation, you might want to move this to a separate "cancelled" list
         // For now, we'll just drop it
-        
+
         Ok(())
     }
 }
@@ -296,39 +321,44 @@ impl MultiSigWalletManager {
             wallets: HashMap::new(),
         }
     }
-    
+
     /// Create a new multi-signature wallet
-    pub fn create_wallet(&mut self, wallet_id: String, participants: Vec<WalletParticipant>, required_signatures: usize) -> Result<(), MultiSigError> {
+    pub fn create_wallet(
+        &mut self,
+        wallet_id: String,
+        participants: Vec<WalletParticipant>,
+        required_signatures: usize,
+    ) -> Result<(), MultiSigError> {
         let wallet = MultiSigWallet::new(wallet_id.clone(), participants, required_signatures)?;
         self.wallets.insert(wallet_id, wallet);
         Ok(())
     }
-    
+
     /// Get a wallet by ID
     pub fn get_wallet(&self, wallet_id: &str) -> Option<&MultiSigWallet> {
         self.wallets.get(wallet_id)
     }
-    
+
     /// Get a mutable reference to a wallet by ID
     pub fn get_wallet_mut(&mut self, wallet_id: &str) -> Option<&mut MultiSigWallet> {
         self.wallets.get_mut(wallet_id)
     }
-    
+
     /// Get all wallets
     pub fn get_all_wallets(&self) -> Vec<&MultiSigWallet> {
         self.wallets.values().collect()
     }
-    
+
     /// Get the number of wallets
     pub fn wallet_count(&self) -> usize {
         self.wallets.len()
     }
-    
+
     /// Check if a wallet exists
     pub fn has_wallet(&self, wallet_id: &str) -> bool {
         self.wallets.contains_key(wallet_id)
     }
-    
+
     /// Remove a wallet
     pub fn remove_wallet(&mut self, wallet_id: &str) -> bool {
         self.wallets.remove(wallet_id).is_some()
@@ -372,7 +402,7 @@ mod tests {
                 public_key: "pubkey2".to_string(),
             },
         ];
-        
+
         let wallet = MultiSigWallet::new("wallet1".to_string(), participants, 2).unwrap();
         assert_eq!(wallet.wallet_id, "wallet1");
         assert_eq!(wallet.participant_count(), 2);
@@ -387,30 +417,32 @@ mod tests {
         let result = MultiSigWallet::new("wallet1".to_string(), vec![], 1);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), MultiSigError::NoParticipants));
-        
+
         // Test with required signatures greater than participants
-        let participants = vec![
-            WalletParticipant {
-                id: "participant1".to_string(),
-                public_key: "pubkey1".to_string(),
-            },
-        ];
-        
+        let participants = vec![WalletParticipant {
+            id: "participant1".to_string(),
+            public_key: "pubkey1".to_string(),
+        }];
+
         let result = MultiSigWallet::new("wallet1".to_string(), participants, 2);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MultiSigError::InvalidRequiredSignatures));
-        
+        assert!(matches!(
+            result.unwrap_err(),
+            MultiSigError::InvalidRequiredSignatures
+        ));
+
         // Test with zero required signatures
-        let participants = vec![
-            WalletParticipant {
-                id: "participant1".to_string(),
-                public_key: "pubkey1".to_string(),
-            },
-        ];
-        
+        let participants = vec![WalletParticipant {
+            id: "participant1".to_string(),
+            public_key: "pubkey1".to_string(),
+        }];
+
         let result = MultiSigWallet::new("wallet1".to_string(), participants, 0);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MultiSigError::InvalidRequiredSignatures));
+        assert!(matches!(
+            result.unwrap_err(),
+            MultiSigError::InvalidRequiredSignatures
+        ));
     }
 
     #[test]
@@ -425,22 +457,22 @@ mod tests {
                 public_key: "pubkey2".to_string(),
             },
         ];
-        
+
         let mut wallet = MultiSigWallet::new("wallet1".to_string(), participants, 2).unwrap();
-        
+
         // Test deposit
         wallet.deposit("BTC".to_string(), 1000);
         assert_eq!(wallet.get_balance(&"BTC".to_string()), 1000);
-        
+
         // Test get all balances
         let balances = wallet.get_all_balances();
         assert_eq!(balances.len(), 1);
         assert_eq!(balances.get(&"BTC".to_string()), Some(&1000));
-        
+
         // Test deposit more of the same token
         wallet.deposit("BTC".to_string(), 500);
         assert_eq!(wallet.get_balance(&"BTC".to_string()), 1500);
-        
+
         // Test deposit different token
         wallet.deposit("ETH".to_string(), 100);
         assert_eq!(wallet.get_balance(&"BTC".to_string()), 1500);
@@ -459,25 +491,30 @@ mod tests {
                 public_key: "pubkey2".to_string(),
             },
         ];
-        
+
         let mut wallet = MultiSigWallet::new("wallet1".to_string(), participants, 2).unwrap();
-        
+
         // Deposit some assets
         wallet.deposit("BTC".to_string(), 1000);
-        
+
         // Create a transaction
-        let transaction_id = wallet.create_transaction("recipient1".to_string(), "BTC".to_string(), 500).unwrap();
+        let transaction_id = wallet
+            .create_transaction("recipient1".to_string(), "BTC".to_string(), 500)
+            .unwrap();
         assert_eq!(transaction_id, 1);
         assert_eq!(wallet.pending_transaction_count(), 1);
         assert_eq!(wallet.executed_transaction_count(), 0);
-        
+
         // Check that the funds were deducted from the wallet
         assert_eq!(wallet.get_balance(&"BTC".to_string()), 500);
-        
+
         // Try to create a transaction with insufficient funds
         let result = wallet.create_transaction("recipient2".to_string(), "BTC".to_string(), 1000);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MultiSigError::InsufficientFunds));
+        assert!(matches!(
+            result.unwrap_err(),
+            MultiSigError::InsufficientFunds
+        ));
     }
 
     #[test]
@@ -496,32 +533,38 @@ mod tests {
                 public_key: "pubkey3".to_string(),
             },
         ];
-        
+
         let mut wallet = MultiSigWallet::new("wallet1".to_string(), participants, 2).unwrap();
-        
+
         // Deposit some assets
         wallet.deposit("BTC".to_string(), 1000);
-        
+
         // Create a transaction
-        let transaction_id = wallet.create_transaction("recipient1".to_string(), "BTC".to_string(), 500).unwrap();
-        
+        let transaction_id = wallet
+            .create_transaction("recipient1".to_string(), "BTC".to_string(), 500)
+            .unwrap();
+
         // Get the transaction
         let transaction = wallet.get_pending_transaction(transaction_id).unwrap();
         assert_eq!(transaction.signatures.len(), 0);
         assert!(!transaction.is_ready_for_execution());
-        
+
         // Sign the transaction with participant1
-        wallet.sign_transaction(transaction_id, "participant1".to_string()).unwrap();
-        
+        wallet
+            .sign_transaction(transaction_id, "participant1".to_string())
+            .unwrap();
+
         // Check that the signature was added
         let transaction = wallet.get_pending_transaction(transaction_id).unwrap();
         assert_eq!(transaction.signatures.len(), 1);
         assert!(transaction.has_signature_from(&"participant1".to_string()));
         assert!(!transaction.is_ready_for_execution()); // Still need one more signature
-        
+
         // Sign the transaction with participant2
-        wallet.sign_transaction(transaction_id, "participant2".to_string()).unwrap();
-        
+        wallet
+            .sign_transaction(transaction_id, "participant2".to_string())
+            .unwrap();
+
         // Check that the signature was added
         let transaction = wallet.get_pending_transaction(transaction_id).unwrap();
         assert_eq!(transaction.signatures.len(), 2);
@@ -541,26 +584,32 @@ mod tests {
                 public_key: "pubkey2".to_string(),
             },
         ];
-        
+
         let mut wallet = MultiSigWallet::new("wallet1".to_string(), participants, 2).unwrap();
-        
+
         // Deposit some assets
         wallet.deposit("BTC".to_string(), 1000);
-        
+
         // Create a transaction
-        let transaction_id = wallet.create_transaction("recipient1".to_string(), "BTC".to_string(), 500).unwrap();
-        
+        let transaction_id = wallet
+            .create_transaction("recipient1".to_string(), "BTC".to_string(), 500)
+            .unwrap();
+
         // Sign the transaction with both participants
-        wallet.sign_transaction(transaction_id, "participant1".to_string()).unwrap();
-        wallet.sign_transaction(transaction_id, "participant2".to_string()).unwrap();
-        
+        wallet
+            .sign_transaction(transaction_id, "participant1".to_string())
+            .unwrap();
+        wallet
+            .sign_transaction(transaction_id, "participant2".to_string())
+            .unwrap();
+
         // Execute the transaction
         wallet.execute_transaction(transaction_id).unwrap();
-        
+
         // Check that the transaction was moved to executed
         assert_eq!(wallet.pending_transaction_count(), 0);
         assert_eq!(wallet.executed_transaction_count(), 1);
-        
+
         // Check that the transaction is marked as executed
         let transaction = wallet.get_executed_transaction(transaction_id).unwrap();
         assert!(transaction.is_executed());
@@ -579,25 +628,27 @@ mod tests {
                 public_key: "pubkey2".to_string(),
             },
         ];
-        
+
         let mut wallet = MultiSigWallet::new("wallet1".to_string(), participants, 2).unwrap();
-        
+
         // Deposit some assets
         wallet.deposit("BTC".to_string(), 1000);
-        
+
         // Create a transaction
-        let transaction_id = wallet.create_transaction("recipient1".to_string(), "BTC".to_string(), 500).unwrap();
-        
+        let transaction_id = wallet
+            .create_transaction("recipient1".to_string(), "BTC".to_string(), 500)
+            .unwrap();
+
         // Check that the funds were deducted from the wallet
         assert_eq!(wallet.get_balance(&"BTC".to_string()), 500);
-        
+
         // Cancel the transaction
         wallet.cancel_transaction(transaction_id).unwrap();
-        
+
         // Check that the transaction was removed
         assert_eq!(wallet.pending_transaction_count(), 0);
         assert_eq!(wallet.executed_transaction_count(), 0);
-        
+
         // Check that the funds were returned to the wallet
         assert_eq!(wallet.get_balance(&"BTC".to_string()), 1000);
     }
@@ -605,7 +656,7 @@ mod tests {
     #[test]
     fn test_wallet_manager() {
         let mut manager = MultiSigWalletManager::new();
-        
+
         // Create a wallet
         let participants = vec![
             WalletParticipant {
@@ -617,21 +668,23 @@ mod tests {
                 public_key: "pubkey2".to_string(),
             },
         ];
-        
-        manager.create_wallet("wallet1".to_string(), participants, 2).unwrap();
-        
+
+        manager
+            .create_wallet("wallet1".to_string(), participants, 2)
+            .unwrap();
+
         // Check that the wallet was created
         assert_eq!(manager.wallet_count(), 1);
         assert!(manager.has_wallet("wallet1"));
-        
+
         // Get the wallet
         let wallet = manager.get_wallet("wallet1").unwrap();
         assert_eq!(wallet.wallet_id, "wallet1");
-        
+
         // Get all wallets
         let wallets = manager.get_all_wallets();
         assert_eq!(wallets.len(), 1);
-        
+
         // Remove the wallet
         assert!(manager.remove_wallet("wallet1"));
         assert_eq!(manager.wallet_count(), 0);
@@ -650,9 +703,9 @@ mod tests {
                 public_key: "pubkey2".to_string(),
             },
         ];
-        
+
         let wallet = MultiSigWallet::new("wallet1".to_string(), participants, 2).unwrap();
-        
+
         // Test participant verification
         assert!(wallet.is_participant(&"participant1".to_string()));
         assert!(wallet.is_participant(&"participant2".to_string()));
@@ -671,18 +724,23 @@ mod tests {
                 public_key: "pubkey2".to_string(),
             },
         ];
-        
+
         let mut wallet = MultiSigWallet::new("wallet1".to_string(), participants, 2).unwrap();
-        
+
         // Try to sign a non-existent transaction
         let result = wallet.sign_transaction(999, "participant1".to_string());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MultiSigError::TransactionNotFound));
-        
+        assert!(matches!(
+            result.unwrap_err(),
+            MultiSigError::TransactionNotFound
+        ));
+
         // Create a transaction
         wallet.deposit("BTC".to_string(), 1000);
-        let transaction_id = wallet.create_transaction("recipient1".to_string(), "BTC".to_string(), 500).unwrap();
-        
+        let transaction_id = wallet
+            .create_transaction("recipient1".to_string(), "BTC".to_string(), 500)
+            .unwrap();
+
         // Try to sign with a non-participant
         let result = wallet.sign_transaction(transaction_id, "participant3".to_string());
         assert!(result.is_err());
@@ -701,33 +759,48 @@ mod tests {
                 public_key: "pubkey2".to_string(),
             },
         ];
-        
+
         let mut wallet = MultiSigWallet::new("wallet1".to_string(), participants, 2).unwrap();
-        
+
         // Try to execute a non-existent transaction
         let result = wallet.execute_transaction(999);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MultiSigError::TransactionNotFound));
-        
+        assert!(matches!(
+            result.unwrap_err(),
+            MultiSigError::TransactionNotFound
+        ));
+
         // Create a transaction
         wallet.deposit("BTC".to_string(), 1000);
-        let transaction_id = wallet.create_transaction("recipient1".to_string(), "BTC".to_string(), 500).unwrap();
-        
+        let transaction_id = wallet
+            .create_transaction("recipient1".to_string(), "BTC".to_string(), 500)
+            .unwrap();
+
         // Try to execute without enough signatures
         let result = wallet.execute_transaction(transaction_id);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MultiSigError::InsufficientSignatures));
-        
+        assert!(matches!(
+            result.unwrap_err(),
+            MultiSigError::InsufficientSignatures
+        ));
+
         // Sign the transaction
-        wallet.sign_transaction(transaction_id, "participant1".to_string()).unwrap();
-        wallet.sign_transaction(transaction_id, "participant2".to_string()).unwrap();
-        
+        wallet
+            .sign_transaction(transaction_id, "participant1".to_string())
+            .unwrap();
+        wallet
+            .sign_transaction(transaction_id, "participant2".to_string())
+            .unwrap();
+
         // Execute the transaction
         wallet.execute_transaction(transaction_id).unwrap();
-        
+
         // Try to execute again (should fail)
         let result = wallet.execute_transaction(transaction_id);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MultiSigError::TransactionNotFound));
+        assert!(matches!(
+            result.unwrap_err(),
+            MultiSigError::TransactionNotFound
+        ));
     }
 }

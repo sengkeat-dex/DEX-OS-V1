@@ -1,14 +1,14 @@
 Development Priority,Category,Component,Algorithm/Data Structure,Feature,Task Priority
 
 1,Core Trading,Orderbook,Orderbook,BTreeMap,Order Storage,High [IMPLEMENTED]
-1,Core Trading,Orderbook,Orderbook,Price-Time Priority,Order Matching,High
-1,Core Trading,Orderbook,Orderbook,Vector,Order Queue,High
-1,Core Trading,Orderbook,Orderbook,Red-Black Tree,Price Level Storage,High
-1,Core Trading,Orderbook,Orderbook,Heap,Time Priority Queue,High
-1,Core Trading,Orderbook,Orderbook,Queue,Transaction Mempool,High
+1,Core Trading,Orderbook,Orderbook,Price-Time Priority,Order Matching,High [IMPLEMENTED]
+1,Core Trading,Orderbook,Orderbook,Vector,Order Queue,High [IMPLEMENTED]
+1,Core Trading,Orderbook,Orderbook,Red-Black Tree,Price Level Storage,High [IMPLEMENTED]
+1,Core Trading,Orderbook,Orderbook,Heap,Time Priority Queue,High [IMPLEMENTED]
+1,Core Trading,Orderbook,Orderbook,Queue,Transaction Mempool,High [IMPLEMENTED]
 1,Core Trading,AMM,AMM,Constant Product (x*y=k),Pool Pricing,High [IMPLEMENTED]
 1,Core Trading,AMM,AMM,StableSwap Invariant,Pool Pricing,High [IMPLEMENTED]
-1,Core Trading,AMM,AMM,Concentrated Liquidity,Tick-based Positioning,High
+1,Core Trading,AMM,AMM,Concentrated Liquidity,Tick-based Positioning,High [IMPLEMENTED]
 1,Core Trading,AMM,AMM,Hash Map,Token Pair Reserves,High
 1,Core Trading,DEX Aggregator,DEX Aggregator,Graph,DEX Liquidity Network,High
 1,Core Trading,DEX Aggregator,DEX Aggregator,Hash Map,Route Caching,High

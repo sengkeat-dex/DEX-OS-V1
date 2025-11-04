@@ -6,9 +6,9 @@
 //! It provides functionality for distributing rewards to oracle providers
 //! using a priority queue to ensure fair and efficient distribution.
 
-use crate::types::{TraderId, TokenId, Quantity};
-use std::collections::BinaryHeap;
+use crate::types::{Quantity, TokenId, TraderId};
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use thiserror::Error;
 
 /// Represents a reward claim that can be processed
@@ -29,7 +29,8 @@ pub struct RewardClaim {
 impl Ord for RewardClaim {
     fn cmp(&self, other: &Self) -> Ordering {
         // Higher priority values come first
-        self.priority.cmp(&other.priority)
+        self.priority
+            .cmp(&other.priority)
             .then_with(|| other.timestamp.cmp(&self.timestamp))
     }
 }
@@ -84,7 +85,7 @@ impl RewardDistributionManager {
     pub fn remove_claims_for_provider(&mut self, provider_id: &TraderId) -> Vec<RewardClaim> {
         let mut removed_claims = Vec::new();
         let mut remaining_claims = BinaryHeap::new();
-        
+
         while let Some(claim) = self.claims.pop() {
             if &claim.provider_id == provider_id {
                 removed_claims.push(claim);
@@ -92,7 +93,7 @@ impl RewardDistributionManager {
                 remaining_claims.push(claim);
             }
         }
-        
+
         self.claims = remaining_claims;
         removed_claims
     }
@@ -107,10 +108,7 @@ impl RewardDistributionManager {
 
     /// Get the total amount of rewards pending distribution
     pub fn total_pending_rewards(&self) -> Quantity {
-        self.claims
-            .iter()
-            .map(|claim| claim.amount)
-            .sum()
+        self.claims.iter().map(|claim| claim.amount).sum()
     }
 
     /// Clear all pending claims
@@ -154,13 +152,15 @@ impl MultiTokenRewardManager {
     /// Process the next reward claim across all tokens (highest priority overall)
     pub fn process_next_claim_global(&mut self) -> Option<(TokenId, RewardClaim)> {
         let mut highest_priority_claim: Option<(&TokenId, &RewardClaim)> = None;
-        
+
         // Find the highest priority claim across all tokens
         for (token_id, manager) in &self.managers {
             if let Some(claim) = manager.peek_next_claim() {
                 if let Some((_, highest_claim)) = highest_priority_claim {
-                    if claim.priority > highest_claim.priority || 
-                       (claim.priority == highest_claim.priority && claim.timestamp < highest_claim.timestamp) {
+                    if claim.priority > highest_claim.priority
+                        || (claim.priority == highest_claim.priority
+                            && claim.timestamp < highest_claim.timestamp)
+                    {
                         highest_priority_claim = Some((token_id, claim));
                     }
                 } else {
@@ -168,7 +168,7 @@ impl MultiTokenRewardManager {
                 }
             }
         }
-        
+
         // Process the highest priority claim
         if let Some((token_id, _)) = highest_priority_claim {
             let token_id_clone = token_id.clone();
@@ -176,7 +176,7 @@ impl MultiTokenRewardManager {
                 return Some((token_id_clone, claim));
             }
         }
-        
+
         None
     }
 
@@ -231,16 +231,19 @@ impl MultiTokenRewardManager {
     }
 
     /// Remove all claims for a specific provider across all tokens
-    pub fn remove_claims_for_provider(&mut self, provider_id: &TraderId) -> std::collections::HashMap<TokenId, Vec<RewardClaim>> {
+    pub fn remove_claims_for_provider(
+        &mut self,
+        provider_id: &TraderId,
+    ) -> std::collections::HashMap<TokenId, Vec<RewardClaim>> {
         let mut removed_claims = std::collections::HashMap::new();
-        
+
         for (token_id, manager) in &mut self.managers {
             let claims = manager.remove_claims_for_provider(provider_id);
             if !claims.is_empty() {
                 removed_claims.insert(token_id.clone(), claims);
             }
         }
-        
+
         removed_claims
     }
 }
@@ -274,7 +277,7 @@ mod tests {
     #[test]
     fn test_add_and_process_claims() {
         let mut manager = RewardDistributionManager::new();
-        
+
         // Add some reward claims
         let claim1 = RewardClaim {
             priority: 10,
@@ -283,7 +286,7 @@ mod tests {
             amount: 1000,
             timestamp: 1000000,
         };
-        
+
         let claim2 = RewardClaim {
             priority: 20,
             provider_id: "oracle2".to_string(),
@@ -291,7 +294,7 @@ mod tests {
             amount: 2000,
             timestamp: 1000001,
         };
-        
+
         let claim3 = RewardClaim {
             priority: 15,
             provider_id: "oracle3".to_string(),
@@ -299,28 +302,28 @@ mod tests {
             amount: 1500,
             timestamp: 1000002,
         };
-        
+
         manager.add_claim(claim1.clone());
         manager.add_claim(claim2.clone());
         manager.add_claim(claim3.clone());
-        
+
         assert_eq!(manager.pending_claims_count(), 3);
         assert!(manager.has_pending_claims());
         assert_eq!(manager.total_pending_rewards(), 4500);
-        
+
         // Process claims - should be processed in priority order (20, then 15, then 10)
         let processed_claim = manager.process_next_claim().unwrap();
         assert_eq!(processed_claim.priority, 20);
         assert_eq!(processed_claim.provider_id, "oracle2");
-        
+
         let processed_claim = manager.process_next_claim().unwrap();
         assert_eq!(processed_claim.priority, 15);
         assert_eq!(processed_claim.provider_id, "oracle3");
-        
+
         let processed_claim = manager.process_next_claim().unwrap();
         assert_eq!(processed_claim.priority, 10);
         assert_eq!(processed_claim.provider_id, "oracle1");
-        
+
         // No more claims
         assert!(manager.process_next_claim().is_none());
         assert_eq!(manager.pending_claims_count(), 0);
@@ -330,7 +333,7 @@ mod tests {
     #[test]
     fn test_remove_claims_for_provider() {
         let mut manager = RewardDistributionManager::new();
-        
+
         // Add claims for different providers
         let claim1 = RewardClaim {
             priority: 10,
@@ -339,7 +342,7 @@ mod tests {
             amount: 1000,
             timestamp: 1000000,
         };
-        
+
         let claim2 = RewardClaim {
             priority: 20,
             provider_id: "oracle2".to_string(),
@@ -347,7 +350,7 @@ mod tests {
             amount: 2000,
             timestamp: 1000001,
         };
-        
+
         let claim3 = RewardClaim {
             priority: 15,
             provider_id: "oracle1".to_string(),
@@ -355,18 +358,18 @@ mod tests {
             amount: 1500,
             timestamp: 1000002,
         };
-        
+
         manager.add_claim(claim1.clone());
         manager.add_claim(claim2.clone());
         manager.add_claim(claim3.clone());
-        
+
         assert_eq!(manager.pending_claims_count(), 3);
-        
+
         // Remove claims for oracle1
         let removed_claims = manager.remove_claims_for_provider(&"oracle1".to_string());
         assert_eq!(removed_claims.len(), 2);
         assert_eq!(manager.pending_claims_count(), 1);
-        
+
         // Only oracle2's claim should remain
         let remaining_claim = manager.process_next_claim().unwrap();
         assert_eq!(remaining_claim.provider_id, "oracle2");
@@ -375,7 +378,7 @@ mod tests {
     #[test]
     fn test_get_claims_for_provider() {
         let mut manager = RewardDistributionManager::new();
-        
+
         // Add claims for different providers
         let claim1 = RewardClaim {
             priority: 10,
@@ -384,7 +387,7 @@ mod tests {
             amount: 1000,
             timestamp: 1000000,
         };
-        
+
         let claim2 = RewardClaim {
             priority: 20,
             provider_id: "oracle2".to_string(),
@@ -392,7 +395,7 @@ mod tests {
             amount: 2000,
             timestamp: 1000001,
         };
-        
+
         let claim3 = RewardClaim {
             priority: 15,
             provider_id: "oracle1".to_string(),
@@ -400,15 +403,15 @@ mod tests {
             amount: 1500,
             timestamp: 1000002,
         };
-        
+
         manager.add_claim(claim1.clone());
         manager.add_claim(claim2.clone());
         manager.add_claim(claim3.clone());
-        
+
         // Get claims for oracle1
         let oracle1_claims = manager.get_claims_for_provider(&"oracle1".to_string());
         assert_eq!(oracle1_claims.len(), 2);
-        
+
         // Get claims for oracle2
         let oracle2_claims = manager.get_claims_for_provider(&"oracle2".to_string());
         assert_eq!(oracle2_claims.len(), 1);
@@ -418,7 +421,7 @@ mod tests {
     #[test]
     fn test_multi_token_reward_manager() {
         let mut manager = MultiTokenRewardManager::new();
-        
+
         // Add claims for different tokens
         let claim1 = RewardClaim {
             priority: 10,
@@ -427,7 +430,7 @@ mod tests {
             amount: 1000,
             timestamp: 1000000,
         };
-        
+
         let claim2 = RewardClaim {
             priority: 20,
             provider_id: "oracle2".to_string(),
@@ -435,10 +438,10 @@ mod tests {
             amount: 2000,
             timestamp: 1000001,
         };
-        
+
         manager.add_claim("BTC".to_string(), claim1.clone());
         manager.add_claim("ETH".to_string(), claim2.clone());
-        
+
         assert_eq!(manager.pending_claims_count(&"BTC".to_string()), 1);
         assert_eq!(manager.pending_claims_count(&"ETH".to_string()), 1);
         assert_eq!(manager.total_pending_claims_count(), 2);
@@ -453,7 +456,7 @@ mod tests {
     #[test]
     fn test_process_next_claim_global() {
         let mut manager = MultiTokenRewardManager::new();
-        
+
         // Add claims with different priorities
         let claim1 = RewardClaim {
             priority: 10,
@@ -462,7 +465,7 @@ mod tests {
             amount: 1000,
             timestamp: 1000000,
         };
-        
+
         let claim2 = RewardClaim {
             priority: 20,
             provider_id: "oracle2".to_string(),
@@ -470,7 +473,7 @@ mod tests {
             amount: 2000,
             timestamp: 1000001,
         };
-        
+
         let claim3 = RewardClaim {
             priority: 15,
             provider_id: "oracle3".to_string(),
@@ -478,26 +481,26 @@ mod tests {
             amount: 1500,
             timestamp: 1000002,
         };
-        
+
         manager.add_claim("BTC".to_string(), claim1.clone());
         manager.add_claim("ETH".to_string(), claim2.clone());
         manager.add_claim("USDC".to_string(), claim3.clone());
-        
+
         // Process claims globally - should process highest priority first (20)
         let processed = manager.process_next_claim_global().unwrap();
         assert_eq!(processed.0, "ETH".to_string());
         assert_eq!(processed.1.priority, 20);
-        
+
         // Next should be priority 15
         let processed = manager.process_next_claim_global().unwrap();
         assert_eq!(processed.0, "USDC".to_string());
         assert_eq!(processed.1.priority, 15);
-        
+
         // Next should be priority 10
         let processed = manager.process_next_claim_global().unwrap();
         assert_eq!(processed.0, "BTC".to_string());
         assert_eq!(processed.1.priority, 10);
-        
+
         // No more claims
         assert!(manager.process_next_claim_global().is_none());
     }
@@ -505,7 +508,7 @@ mod tests {
     #[test]
     fn test_remove_claims_for_provider_global() {
         let mut manager = MultiTokenRewardManager::new();
-        
+
         // Add claims for the same provider across different tokens
         let claim1 = RewardClaim {
             priority: 10,
@@ -514,7 +517,7 @@ mod tests {
             amount: 1000,
             timestamp: 1000000,
         };
-        
+
         let claim2 = RewardClaim {
             priority: 20,
             provider_id: "oracle2".to_string(),
@@ -522,7 +525,7 @@ mod tests {
             amount: 2000,
             timestamp: 1000001,
         };
-        
+
         let claim3 = RewardClaim {
             priority: 15,
             provider_id: "oracle1".to_string(),
@@ -530,20 +533,20 @@ mod tests {
             amount: 1500,
             timestamp: 1000002,
         };
-        
+
         manager.add_claim("BTC".to_string(), claim1.clone());
         manager.add_claim("ETH".to_string(), claim2.clone());
         manager.add_claim("USDC".to_string(), claim3.clone());
-        
+
         assert_eq!(manager.total_pending_claims_count(), 3);
-        
+
         // Remove all claims for oracle1
         let removed_claims = manager.remove_claims_for_provider(&"oracle1".to_string());
         assert_eq!(removed_claims.len(), 2);
         assert!(removed_claims.contains_key(&"BTC".to_string()));
         assert!(removed_claims.contains_key(&"USDC".to_string()));
         assert_eq!(manager.total_pending_claims_count(), 1);
-        
+
         // Only oracle2's claim should remain
         let remaining_claim = manager.process_next_claim_global().unwrap();
         assert_eq!(remaining_claim.1.provider_id, "oracle2");

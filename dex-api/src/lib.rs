@@ -3,17 +3,24 @@
 //! This module provides HTTP API endpoints for interacting with the DEX.
 
 pub mod auth;
+pub mod challenge;
 pub mod config;
 
 pub use auth::Claims;
+pub use challenge::ChallengeStore;
 pub use config::Config;
 
-use auth::{AuthManager, AuthRejection};
+use auth::{
+    clamp_ttl, normalize_address, verify_wallet_signature, AuthManager, AuthRejection,
+};
+use challenge::ChallengeError;
 use dex_core::{
     orderbook::OrderBook,
-    types::{OrderId, TraderId, Trade},
+    types::{OrderId, Price, Quantity, Trade, TraderId},
 };
 use dex_db::DatabaseManager;
+use futures_util::{SinkExt, StreamExt};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::{
     convert::Infallible,
@@ -23,11 +30,12 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use warp::{
     filters::body::BodyDeserializeError,
     http::StatusCode,
     reject::{MethodNotAllowed, MissingHeader},
+    ws::{Message, WebSocket, Ws},
     Filter,
 };
 
@@ -39,6 +47,9 @@ pub struct ApiState {
     pub trade_id_counter: Arc<AtomicU64>,
     pub database: Arc<DatabaseManager>,
     pub auth: Arc<AuthManager>,
+    pub config: Config,
+    pub wallet_challenges: Arc<ChallengeStore>,
+    pub market_tx: broadcast::Sender<DepthSnapshot>,
 }
 
 /// Request to create a new order
@@ -104,6 +115,62 @@ pub struct GetTradesResponse {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DepthLevel {
+    pub price: Price,
+    pub quantity: Quantity,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DepthSnapshot {
+    pub bids: Vec<DepthLevel>,
+    pub asks: Vec<DepthLevel>,
+    pub best_bid: Option<Price>,
+    pub best_ask: Option<Price>,
+    pub timestamp: u64,
+}
+
+const DEFAULT_DEPTH_LEVELS: usize = 10;
+const STREAM_DEPTH_LEVELS: usize = 20;
+const MAX_DEPTH_LEVELS: usize = 100;
+
+#[derive(Serialize)]
+pub struct TokenResponse {
+    pub token: String,
+    pub expires_at: u64,
+}
+
+#[derive(Serialize)]
+pub struct WalletChallengeResponse {
+    pub challenge: String,
+    pub expires_at: u64,
+}
+
+#[derive(Deserialize)]
+struct SharedTokenRequest {
+    trader_id: String,
+    secret: String,
+    #[serde(default)]
+    ttl_seconds: Option<u64>,
+    #[serde(default)]
+    audience: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WalletChallengeRequest {
+    address: String,
+}
+
+#[derive(Deserialize)]
+struct WalletTokenRequest {
+    address: String,
+    signature: String,
+    #[serde(default)]
+    ttl_seconds: Option<u64>,
+    #[serde(default)]
+    audience: Option<String>,
+}
+
 #[derive(Serialize)]
 struct ErrorResponse {
     code: &'static str,
@@ -115,7 +182,7 @@ pub fn routes(
     state: ApiState,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     let orderbook = warp::path("orderbook");
-    
+
     // Create order endpoint
     let create_order = orderbook
         .and(warp::path("orders"))
@@ -123,15 +190,25 @@ pub fn routes(
         .and(authenticated(state.clone()))
         .and(warp::body::content_length_limit(8 * 1024))
         .and(warp::body::json())
-        .and_then(handle_create_order);
-    
+        .and_then(handle_create_order)
+        .boxed();
+
     // Get prices endpoint
     let get_prices = orderbook
         .and(warp::path("prices"))
         .and(warp::get())
         .and(with_state(state.clone()))
-        .and_then(handle_get_prices);
-    
+        .and_then(handle_get_prices)
+        .boxed();
+
+    let get_depth = orderbook
+        .and(warp::path("depth"))
+        .and(warp::get())
+        .and(with_state(state.clone()))
+        .and(optional_depth_query())
+        .and_then(handle_get_depth)
+        .boxed();
+
     // Get trades for order endpoint
     let get_trades_for_order = orderbook
         .and(warp::path("orders"))
@@ -139,8 +216,9 @@ pub fn routes(
         .and(warp::path("trades"))
         .and(warp::get())
         .and(authenticated(state.clone()))
-        .and_then(handle_get_trades_for_order);
-    
+        .and_then(handle_get_trades_for_order)
+        .boxed();
+
     // Get trades for trader endpoint
     let get_trades_for_trader = orderbook
         .and(warp::path("traders"))
@@ -148,19 +226,63 @@ pub fn routes(
         .and(warp::path("trades"))
         .and(warp::get())
         .and(authenticated(state.clone()))
-        .and_then(handle_get_trades_for_trader);
-    
+        .and_then(handle_get_trades_for_trader)
+        .boxed();
+
+    let depth_ws = warp::path("ws")
+        .and(warp::path("depth"))
+        .and(with_state(state.clone()))
+        .and(optional_depth_query())
+        .and(warp::ws())
+        .and_then(handle_depth_ws)
+        .boxed();
+
+    let auth_endpoints = auth_routes(state.clone()).boxed();
+
     create_order
         .or(get_prices)
         .or(get_trades_for_order)
         .or(get_trades_for_trader)
+        .or(get_depth)
+        .or(depth_ws)
+        .or(auth_endpoints)
         .recover(handle_rejection)
 }
 
-/// Helper to pass state to handlers
-fn with_state(
+fn auth_routes(
     state: ApiState,
-) -> impl Filter<Extract = (ApiState,), Error = Infallible> + Clone {
+) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    let shared = warp::path("auth")
+        .and(warp::path("token"))
+        .and(warp::path("shared"))
+        .and(warp::post())
+        .and(with_state(state.clone()))
+        .and(warp::body::content_length_limit(4 * 1024))
+        .and(warp::body::json())
+        .and_then(handle_shared_token);
+
+    let challenge = warp::path("auth")
+        .and(warp::path("challenge"))
+        .and(warp::post())
+        .and(with_state(state.clone()))
+        .and(warp::body::content_length_limit(2 * 1024))
+        .and(warp::body::json())
+        .and_then(handle_wallet_challenge);
+
+    let wallet_token = warp::path("auth")
+        .and(warp::path("token"))
+        .and(warp::path("wallet"))
+        .and(warp::post())
+        .and(with_state(state))
+        .and(warp::body::content_length_limit(4 * 1024))
+        .and(warp::body::json())
+        .and_then(handle_wallet_token);
+
+    shared.or(challenge).or(wallet_token)
+}
+
+/// Helper to pass state to handlers
+fn with_state(state: ApiState) -> impl Filter<Extract = (ApiState,), Error = Infallible> + Clone {
     warp::any().map(move || state.clone())
 }
 
@@ -175,6 +297,11 @@ fn authenticated(
                 Err(err) => Err(warp::reject::custom(AuthRejection(err))),
             }
         })
+        .untuple_one()
+}
+
+fn optional_depth_query() -> impl Filter<Extract = (Option<String>,), Error = warp::Rejection> + Clone {
+    warp::query::raw().optional()
 }
 
 /// Handler for creating orders
@@ -252,6 +379,8 @@ async fn handle_create_order(
         message,
     };
 
+    broadcast_depth_snapshot(&state).await;
+
     Ok(warp::reply::with_status(
         warp::reply::json(&response),
         StatusCode::CREATED,
@@ -268,6 +397,27 @@ async fn handle_get_prices(state: ApiState) -> Result<impl warp::Reply, warp::Re
     Ok(warp::reply::json(&response))
 }
 
+async fn handle_get_depth(
+    state: ApiState,
+    raw_query: Option<String>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let levels = parse_depth_levels(raw_query);
+    let snapshot = {
+        let orderbook = state.orderbook.read().await;
+        depth_snapshot(&orderbook, levels)
+    };
+    Ok(warp::reply::json(&snapshot))
+}
+
+async fn handle_depth_ws(
+    state: ApiState,
+    raw_query: Option<String>,
+    ws: Ws,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let levels = parse_depth_levels(raw_query);
+    Ok(ws.on_upgrade(move |socket| depth_ws_session(socket, state, levels)))
+}
+
 /// Handler for getting trades for an order
 async fn handle_get_trades_for_order(
     order_id: u64,
@@ -281,7 +431,10 @@ async fn handle_get_trades_for_order(
                 success: true,
                 message: None,
             };
-            Ok(warp::reply::json(&response))
+            Ok(warp::reply::with_status(
+                warp::reply::json(&response),
+                StatusCode::OK,
+            ))
         }
         Err(err) => {
             eprintln!("failed to load trades for order {}: {}", order_id, err);
@@ -314,7 +467,10 @@ async fn handle_get_trades_for_trader(
                 success: true,
                 message: None,
             };
-            Ok(warp::reply::json(&response))
+            Ok(warp::reply::with_status(
+                warp::reply::json(&response),
+                StatusCode::OK,
+            ))
         }
         Err(err) => {
             eprintln!("failed to load trades for trader {}: {}", trader_id, err);
@@ -325,6 +481,275 @@ async fn handle_get_trades_for_trader(
             ))
         }
     }
+}
+
+async fn handle_shared_token(
+    state: ApiState,
+    req: SharedTokenRequest,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    if state.config.trader_secrets.is_empty() {
+        return Ok(error_reply(
+            "unauthorized",
+            "shared secret token issuance is disabled",
+            StatusCode::UNAUTHORIZED,
+        ));
+    }
+    let secret = match state.config.trader_secrets.get(&req.trader_id) {
+        Some(secret) => secret,
+        None => {
+            return Ok(error_reply(
+                "unauthorized",
+                "invalid trader credentials",
+                StatusCode::UNAUTHORIZED,
+            ))
+        }
+    };
+
+    if secret.expose_secret() != req.secret {
+        return Ok(error_reply(
+            "unauthorized",
+            "invalid trader credentials",
+            StatusCode::UNAUTHORIZED,
+        ));
+    }
+
+    let ttl = clamp_ttl(
+        req.ttl_seconds,
+        state.config.jwt_default_ttl_seconds,
+        state.config.jwt_max_ttl_seconds,
+    );
+    let issued = match state
+        .auth
+        .issue_token(req.trader_id.clone(), ttl, req.audience.clone())
+    {
+        Ok(token) => token,
+        Err(err) => {
+            eprintln!("failed to issue shared token: {}", err);
+            return Ok(error_reply(
+                "internal_error",
+                "failed to issue token",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
+        }
+    };
+
+    let response = TokenResponse {
+        token: issued.token,
+        expires_at: issued.expires_at,
+    };
+    Ok(warp::reply::json(&response))
+}
+
+async fn handle_wallet_challenge(
+    state: ApiState,
+    req: WalletChallengeRequest,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let address = match normalize_address(&req.address) {
+        Ok(addr) => addr,
+        Err(_) => {
+            return Ok(error_reply(
+                "invalid_address",
+                "wallet address must be a 0x-prefixed hex string",
+                StatusCode::BAD_REQUEST,
+            ))
+        }
+    };
+    let issued = state.wallet_challenges.issue(&address).await;
+    let response = WalletChallengeResponse {
+        challenge: issued.challenge,
+        expires_at: issued.expires_at,
+    };
+    Ok(warp::reply::json(&response))
+}
+
+async fn handle_wallet_token(
+    state: ApiState,
+    req: WalletTokenRequest,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let address = match normalize_address(&req.address) {
+        Ok(addr) => addr,
+        Err(_) => {
+            return Ok(error_reply(
+                "invalid_address",
+                "wallet address must be a 0x-prefixed hex string",
+                StatusCode::BAD_REQUEST,
+            ))
+        }
+    };
+
+    let message = match state.wallet_challenges.take(&address).await {
+        Ok(message) => message,
+        Err(err) => {
+            let (code, status, msg) = match err {
+                ChallengeError::Missing => (
+                    "challenge_missing",
+                    StatusCode::BAD_REQUEST,
+                    "no pending challenge for this address",
+                ),
+                ChallengeError::Expired => (
+                    "challenge_expired",
+                    StatusCode::BAD_REQUEST,
+                    "challenge expired, request a new one",
+                ),
+            };
+            return Ok(error_reply(code, msg, status));
+        }
+    };
+
+    if let Err(err) = verify_wallet_signature(&address, &message, &req.signature) {
+        return Ok(error_reply(
+            "invalid_signature",
+            err.to_string(),
+            StatusCode::UNAUTHORIZED,
+        ));
+    }
+
+    let ttl = clamp_ttl(
+        req.ttl_seconds,
+        state.config.jwt_default_ttl_seconds,
+        state.config.jwt_max_ttl_seconds,
+    );
+
+    let issued = match state
+        .auth
+        .issue_token(address.clone(), ttl, req.audience.clone())
+    {
+        Ok(token) => token,
+        Err(err) => {
+            eprintln!("failed to issue wallet token: {}", err);
+            return Ok(error_reply(
+                "internal_error",
+                "failed to issue token",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
+        }
+    };
+
+    let response = TokenResponse {
+        token: issued.token,
+        expires_at: issued.expires_at,
+    };
+    Ok(warp::reply::json(&response))
+}
+
+async fn depth_ws_session(socket: WebSocket, state: ApiState, levels: usize) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut subscriber = state.market_tx.subscribe();
+
+    // Drain any client messages to detect disconnects
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            if msg.is_close() {
+                break;
+            }
+        }
+    });
+
+    let initial_snapshot = {
+        let orderbook = state.orderbook.read().await;
+        depth_snapshot(&orderbook, levels)
+    };
+
+    if send_depth_message(&mut sender, &initial_snapshot, levels)
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    loop {
+        match subscriber.recv().await {
+            Ok(snapshot) => {
+                if send_depth_message(&mut sender, &snapshot, levels)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                // Skip missed updates; loop continues to receive latest snapshot
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+async fn send_depth_message(
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    snapshot: &DepthSnapshot,
+    levels: usize,
+) -> Result<(), warp::Error> {
+    let mut payload = snapshot.clone();
+    payload.bids.truncate(levels);
+    payload.asks.truncate(levels);
+    let text = match serde_json::to_string(&payload) {
+        Ok(text) => text,
+        Err(_) => return Ok(()),
+    };
+    sender.send(Message::text(text)).await
+}
+
+fn clamp_depth_levels(levels: Option<usize>) -> usize {
+    let requested = levels.unwrap_or(DEFAULT_DEPTH_LEVELS);
+    requested.max(1).min(MAX_DEPTH_LEVELS)
+}
+
+fn parse_depth_levels(raw: Option<String>) -> usize {
+    if let Some(raw) = raw {
+        for pair in raw.split('&') {
+            let mut parts = pair.splitn(2, '=');
+            if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                if key == "levels" {
+                    if let Ok(parsed) = value.parse::<usize>() {
+                        return clamp_depth_levels(Some(parsed));
+                    }
+                }
+            }
+        }
+    }
+    clamp_depth_levels(None)
+}
+
+fn depth_snapshot(orderbook: &OrderBook, levels: usize) -> DepthSnapshot {
+    let best_bid = orderbook.best_bid();
+    let best_ask = orderbook.best_ask();
+    let bids = orderbook
+        .bids
+        .iter()
+        .rev()
+        .take(levels)
+        .map(|(&price, level)| DepthLevel {
+            price,
+            quantity: level.total_quantity,
+        })
+        .collect();
+    let asks = orderbook
+        .asks
+        .iter()
+        .take(levels)
+        .map(|(&price, level)| DepthLevel {
+            price,
+            quantity: level.total_quantity,
+        })
+        .collect();
+    let timestamp = current_unix_timestamp().unwrap_or_default();
+    DepthSnapshot {
+        bids,
+        asks,
+        best_bid,
+        best_ask,
+        timestamp,
+    }
+}
+
+async fn broadcast_depth_snapshot(state: &ApiState) {
+    let snapshot = {
+        let orderbook = state.orderbook.read().await;
+        depth_snapshot(&orderbook, STREAM_DEPTH_LEVELS)
+    };
+    let _ = state.market_tx.send(snapshot);
 }
 
 async fn handle_rejection(err: warp::Rejection) -> Result<impl warp::Reply, Infallible> {
@@ -620,125 +1045,155 @@ mod validation {
         }
 
         #[test]
-    fn rejects_bad_token_chars() {
-        let mut req = base_request();
-        req.base_token = "E TH".into();
-        let err = validate_create_order(req).unwrap_err();
-        assert!(matches!(err, ValidationError::InvalidBaseToken));
-    }
-}
-
-#[cfg(test)]
-mod auth_filter_tests {
-    use super::*;
-    use jsonwebtoken::{encode, EncodingKey, Header};
-    use secrecy::{ExposeSecret, SecretString};
-    use std::{
-        sync::{
-            atomic::AtomicU64,
-            Arc,
-        },
-        time::{SystemTime, UNIX_EPOCH},
-    };
-    use tokio::sync::RwLock;
-    use warp::http::StatusCode;
-
-    const TEST_DB_URL: &str = "postgres://user:password@localhost/test";
-    const TEST_SECRET: &str = "super-secret-signing-key";
-
-    #[tokio::test]
-    async fn missing_token_returns_401() {
-        let state = test_state();
-        let filter = protected_filter(state);
-
-        let response = warp::test::request().reply(&filter).await;
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn invalid_token_returns_401() {
-        let state = test_state();
-        let filter = protected_filter(state);
-
-        let response = warp::test::request()
-            .header("authorization", "Bearer totally-invalid")
-            .reply(&filter)
-            .await;
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn expired_token_returns_401() {
-        let secret = SecretString::from(TEST_SECRET.to_string());
-        let token = build_token(&secret, -60);
-        let state = test_state();
-        let filter = protected_filter(state);
-
-        let response = warp::test::request()
-            .header("authorization", format!("Bearer {}", token))
-            .reply(&filter)
-            .await;
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn valid_token_returns_200() {
-        let secret = SecretString::from(TEST_SECRET.to_string());
-        let token = build_token(&secret, 300);
-        let state = test_state();
-        let filter = protected_filter(state);
-
-        let response = warp::test::request()
-            .header("authorization", format!("Bearer {}", token))
-            .reply(&filter)
-            .await;
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    fn protected_filter(state: ApiState) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-        authenticated(state).and_then(|claims: Claims, _state: ApiState| async move {
-            let reply = warp::reply::with_status(
-                warp::reply::json(&claims.sub),
-                StatusCode::OK,
-            );
-            Ok::<_, warp::Rejection>(reply)
-        })
-        .recover(handle_rejection)
-    }
-
-    fn test_state() -> ApiState {
-        let secret = SecretString::from(TEST_SECRET.to_string());
-        let auth = Arc::new(AuthManager::new(&secret));
-
-        ApiState {
-            orderbook: Arc::new(RwLock::new(OrderBook::new())),
-            order_id_counter: Arc::new(AtomicU64::new(1)),
-            trade_id_counter: Arc::new(AtomicU64::new(1)),
-            database: Arc::new(DatabaseManager::connect_lazy(TEST_DB_URL).expect("lazy db pool")),
-            auth,
+        fn rejects_bad_token_chars() {
+            let mut req = base_request();
+            req.base_token = "E TH".into();
+            let err = validate_create_order(req).unwrap_err();
+            assert!(matches!(err, ValidationError::InvalidBaseToken));
         }
     }
 
-    fn build_token(secret: &SecretString, offset_seconds: i64) -> String {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time went backwards")
-            .as_secs() as i64;
-        let claims = Claims {
-            sub: "alice".into(),
-            exp: (now + offset_seconds) as usize,
-            aud: None,
+    #[cfg(test)]
+    mod auth_filter_tests {
+        use crate::{
+            authenticated,
+            handle_rejection,
+            auth::AuthManager,
+            challenge::ChallengeStore,
+            ApiState,
+            Claims,
+            Config,
         };
-        encode(
-            &Header::default(),
-            &claims,
-            &EncodingKey::from_secret(secret.expose_secret().as_bytes()),
-        )
-        .expect("token encoding")
+        use dex_core::orderbook::OrderBook;
+        use dex_db::DatabaseManager;
+        use jsonwebtoken::{encode, EncodingKey, Header};
+        use secrecy::{ExposeSecret, SecretString};
+        use std::{
+            collections::HashMap,
+            sync::{atomic::AtomicU64, Arc},
+            time::{SystemTime, UNIX_EPOCH},
+        };
+        use tokio::sync::{broadcast, RwLock};
+        use warp::http::StatusCode;
+        use warp::Filter;
+
+        const TEST_DB_URL: &str = "postgres://user:password@localhost/test";
+        const TEST_SECRET: &str = "super-secret-signing-key";
+
+        #[tokio::test]
+        async fn missing_token_returns_401() {
+            let state = test_state();
+            let filter = protected_filter(state);
+
+            let response = warp::test::request().reply(&filter).await;
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn invalid_token_returns_401() {
+            let state = test_state();
+            let filter = protected_filter(state);
+
+            let response = warp::test::request()
+                .header("authorization", "Bearer totally-invalid")
+                .reply(&filter)
+                .await;
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn expired_token_returns_401() {
+            let secret = SecretString::from(TEST_SECRET.to_string());
+            let token = build_token(&secret, -60);
+            let state = test_state();
+            let filter = protected_filter(state);
+
+            let response = warp::test::request()
+                .header("authorization", format!("Bearer {}", token))
+                .reply(&filter)
+                .await;
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn valid_token_returns_200() {
+            let secret = SecretString::from(TEST_SECRET.to_string());
+            let token = build_token(&secret, 300);
+            let state = test_state();
+            let filter = protected_filter(state);
+
+            let response = warp::test::request()
+                .header("authorization", format!("Bearer {}", token))
+                .reply(&filter)
+                .await;
+
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        fn protected_filter(
+            state: ApiState,
+        ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+            authenticated(state)
+                .and_then(|claims: Claims, _state: ApiState| async move {
+                    let reply =
+                        warp::reply::with_status(warp::reply::json(&claims.sub), StatusCode::OK);
+                    Ok::<_, warp::Rejection>(reply)
+                })
+                .recover(handle_rejection)
+        }
+
+        fn test_state() -> ApiState {
+            let secret = SecretString::from(TEST_SECRET.to_string());
+            let auth = Arc::new(AuthManager::new(&secret, "test-issuer"));
+            let mut trader_secrets = HashMap::new();
+            trader_secrets.insert("alice".into(), SecretString::from("shared-secret"));
+            let config = Config {
+                database_url: SecretString::from(TEST_DB_URL.to_string()),
+                jwt_secret: secret.clone(),
+                jwt_issuer: "test-issuer".into(),
+                jwt_default_ttl_seconds: 900,
+                jwt_max_ttl_seconds: 3600,
+                wallet_challenge_ttl_seconds: 300,
+                trader_secrets,
+                server_port: 3030,
+            };
+            let (market_tx, _) = broadcast::channel(16);
+
+            ApiState {
+                orderbook: Arc::new(RwLock::new(OrderBook::new())),
+                order_id_counter: Arc::new(AtomicU64::new(1)),
+                trade_id_counter: Arc::new(AtomicU64::new(1)),
+                database: Arc::new(
+                    DatabaseManager::connect_lazy(TEST_DB_URL).expect("lazy db pool"),
+                ),
+                auth,
+                config,
+                wallet_challenges: Arc::new(ChallengeStore::new(300)),
+                market_tx,
+            }
+        }
+
+        fn build_token(secret: &SecretString, offset_seconds: i64) -> String {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time went backwards")
+                .as_secs() as i64;
+            let claims = Claims {
+                sub: "alice".into(),
+                exp: (now + offset_seconds) as usize,
+                aud: None,
+                iss: None,
+                iat: None,
+            };
+            encode(
+                &Header::default(),
+                &claims,
+                &EncodingKey::from_secret(secret.expose_secret().as_bytes()),
+            )
+            .expect("token encoding")
+        }
     }
-}
 }

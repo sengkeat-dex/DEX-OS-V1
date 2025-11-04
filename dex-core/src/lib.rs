@@ -1,18 +1,18 @@
 //! DEX-OS core engine library
 
-pub mod orderbook;
 pub mod amm;
-pub mod types;
-pub mod merkle_tree;
-pub mod stableswap;
-pub mod fee_management;
 pub mod fee_distribution;
-pub mod path_routing;
+pub mod fee_management;
+pub mod merkle_tree;
+pub mod multisig_wallet;
+pub mod orderbook;
 pub mod partial_fill;
-pub mod trade_prevention;
+pub mod path_routing;
 pub mod price_prediction;
 pub mod reward_distribution;
-pub mod multisig_wallet;
+pub mod stableswap;
+pub mod trade_prevention;
+pub mod types;
 
 #[cfg(test)]
 mod tests {

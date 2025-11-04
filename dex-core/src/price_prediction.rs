@@ -46,24 +46,28 @@ impl KalmanPricePredictor {
     }
 
     /// Update the filter with a new price observation
-    pub fn update(&mut self, observation: f64, timestamp: u64) -> Result<KalmanState, PricePredictionError> {
+    pub fn update(
+        &mut self,
+        observation: f64,
+        timestamp: u64,
+    ) -> Result<KalmanState, PricePredictionError> {
         // Time update (prediction)
         // In a simple model, we assume the price doesn't change much between observations
         // but we add process noise to account for uncertainty
         let predicted_variance = self.state.variance + self.process_noise;
-        
+
         // Measurement update (correction)
         let innovation = observation - self.state.price;
         let innovation_variance = predicted_variance + self.measurement_noise;
         let kalman_gain = predicted_variance / innovation_variance;
-        
+
         // Update state estimate
         self.state.price += kalman_gain * innovation;
         self.state.variance = (1.0 - kalman_gain) * predicted_variance;
-        
+
         // Update timestamp
         self.last_update = timestamp;
-        
+
         Ok(self.state.clone())
     }
 
@@ -71,10 +75,10 @@ impl KalmanPricePredictor {
     pub fn predict(&self) -> Result<KalmanState, PricePredictionError> {
         // In this simple model, we predict the price will change based on recent trend
         // but with increased uncertainty
-        
+
         // Simple prediction: assume price continues in the same direction with small momentum
         let predicted_price = self.state.price * 1.001; // Small positive momentum assumption
-        
+
         Ok(KalmanState {
             price: predicted_price,
             variance: self.state.variance + self.process_noise,
@@ -126,14 +130,25 @@ impl PricePredictionManager {
     }
 
     /// Add or update a price predictor for a token pair
-    pub fn add_predictor(&mut self, base_token: TokenId, quote_token: TokenId, predictor: KalmanPricePredictor) {
+    pub fn add_predictor(
+        &mut self,
+        base_token: TokenId,
+        quote_token: TokenId,
+        predictor: KalmanPricePredictor,
+    ) {
         self.predictors.insert((base_token, quote_token), predictor);
     }
 
     /// Update the price for a token pair
-    pub fn update_price(&mut self, base_token: &TokenId, quote_token: &TokenId, price: f64, timestamp: u64) -> Result<KalmanState, PricePredictionError> {
+    pub fn update_price(
+        &mut self,
+        base_token: &TokenId,
+        quote_token: &TokenId,
+        price: f64,
+        timestamp: u64,
+    ) -> Result<KalmanState, PricePredictionError> {
         let key = (base_token.clone(), quote_token.clone());
-        
+
         if let Some(predictor) = self.predictors.get_mut(&key) {
             predictor.update(price, timestamp)
         } else {
@@ -142,9 +157,13 @@ impl PricePredictionManager {
     }
 
     /// Predict the next price for a token pair
-    pub fn predict_price(&self, base_token: &TokenId, quote_token: &TokenId) -> Result<KalmanState, PricePredictionError> {
+    pub fn predict_price(
+        &self,
+        base_token: &TokenId,
+        quote_token: &TokenId,
+    ) -> Result<KalmanState, PricePredictionError> {
         let key = (base_token.clone(), quote_token.clone());
-        
+
         if let Some(predictor) = self.predictors.get(&key) {
             predictor.predict()
         } else {
@@ -153,9 +172,13 @@ impl PricePredictionManager {
     }
 
     /// Get the current estimated price for a token pair
-    pub fn get_estimated_price(&self, base_token: &TokenId, quote_token: &TokenId) -> Result<f64, PricePredictionError> {
+    pub fn get_estimated_price(
+        &self,
+        base_token: &TokenId,
+        quote_token: &TokenId,
+    ) -> Result<f64, PricePredictionError> {
         let key = (base_token.clone(), quote_token.clone());
-        
+
         if let Some(predictor) = self.predictors.get(&key) {
             Ok(predictor.get_estimated_price())
         } else {
@@ -205,7 +228,7 @@ mod tests {
     #[test]
     fn test_kalman_filter_update() {
         let mut filter = KalmanPricePredictor::new(100.0, 0.1, 0.5);
-        
+
         // Update with a new observation
         let state = filter.update(105.0, 1000).unwrap();
         assert_ne!(state.price, 100.0); // Should have changed
@@ -215,13 +238,13 @@ mod tests {
     #[test]
     fn test_kalman_filter_convergence() {
         let mut filter = KalmanPricePredictor::new(100.0, 0.1, 0.5);
-        
+
         // Feed a series of observations that are all around 105
         for i in 0..10 {
             let observation = 105.0 + (i as f64 - 5.0) * 0.1; // Values around 105
             filter.update(observation, i * 100).unwrap();
         }
-        
+
         // The estimate should have converged toward 105
         let estimated_price = filter.get_estimated_price();
         assert!((estimated_price - 105.0).abs() < 2.0); // Should be within 2 of 105
@@ -231,11 +254,11 @@ mod tests {
     #[test]
     fn test_kalman_filter_prediction() {
         let mut filter = KalmanPricePredictor::new(100.0, 0.1, 0.5);
-        
+
         // Update with some observations
         filter.update(102.0, 1000).unwrap();
         filter.update(104.0, 2000).unwrap();
-        
+
         // Make a prediction
         let prediction = filter.predict().unwrap();
         assert_ne!(prediction.price, filter.get_estimated_price()); // Prediction should differ
@@ -245,26 +268,32 @@ mod tests {
     #[test]
     fn test_price_prediction_manager() {
         let mut manager = PricePredictionManager::new();
-        
+
         // Add a predictor
         let predictor = KalmanPricePredictor::new(50000.0, 10.0, 50.0);
         manager.add_predictor("BTC".to_string(), "USD".to_string(), predictor);
-        
+
         assert_eq!(manager.predictor_count(), 1);
         assert!(manager.has_predictors());
-        
+
         // Update a price
-        let state = manager.update_price(&"BTC".to_string(), &"USD".to_string(), 51000.0, 1000).unwrap();
+        let state = manager
+            .update_price(&"BTC".to_string(), &"USD".to_string(), 51000.0, 1000)
+            .unwrap();
         assert_ne!(state.price, 50000.0);
-        
+
         // Predict next price
-        let prediction = manager.predict_price(&"BTC".to_string(), &"USD".to_string()).unwrap();
+        let prediction = manager
+            .predict_price(&"BTC".to_string(), &"USD".to_string())
+            .unwrap();
         assert_ne!(prediction.price, state.price);
-        
+
         // Get estimated price
-        let estimated = manager.get_estimated_price(&"BTC".to_string(), &"USD".to_string()).unwrap();
+        let estimated = manager
+            .get_estimated_price(&"BTC".to_string(), &"USD".to_string())
+            .unwrap();
         assert_eq!(estimated, state.price);
-        
+
         // Remove predictor
         assert!(manager.remove_predictor(&"BTC".to_string(), &"USD".to_string()));
         assert_eq!(manager.predictor_count(), 0);
@@ -273,12 +302,12 @@ mod tests {
     #[test]
     fn test_reset_filter() {
         let mut filter = KalmanPricePredictor::new(100.0, 0.1, 0.5);
-        
+
         // Update the filter
         filter.update(150.0, 1000).unwrap();
         assert_ne!(filter.get_estimated_price(), 100.0);
         assert!(filter.get_uncertainty() < 1.0);
-        
+
         // Reset the filter
         filter.reset(200.0);
         assert_eq!(filter.get_estimated_price(), 200.0);
@@ -288,18 +317,18 @@ mod tests {
     #[test]
     fn test_noise_parameter_adjustment() {
         let mut filter = KalmanPricePredictor::new(100.0, 0.1, 0.5);
-        
+
         // Update with an observation
         filter.update(105.0, 1000).unwrap();
         let variance_before = filter.get_uncertainty();
-        
+
         // Adjust noise parameters
         filter.set_noise_parameters(0.5, 1.0); // Higher noise
-        
+
         // Update again
         filter.update(110.0, 2000).unwrap();
         let variance_after = filter.get_uncertainty();
-        
+
         // With higher noise, uncertainty should be higher
         assert!(variance_after > variance_before);
     }

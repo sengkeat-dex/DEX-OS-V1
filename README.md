@@ -24,6 +24,7 @@ A high-performance decentralized exchange core engine built with Rust, WebAssemb
 - wasm-pack (for WASM builds)
 - PostgreSQL (for database functionality)
 - Git (for version control and repository management)
+- Node.js (for Codex AI assistance)
 
 ## Building
 
@@ -50,6 +51,34 @@ cargo run -p dex-api
 ```
 
 The API server will start on http://localhost:3030
+
+### Authentication helpers
+
+The API now exposes token issuance flows so the web UI (and CLI) can mint JWTs without copying secrets around:
+
+- Configure `JWT_ISSUER`, `JWT_TTL_SECONDS` (default `900`), `JWT_MAX_TTL_SECONDS` (default `3600`), and `TRADER_SECRETS` (comma-separated `trader:secret` pairs) in your environment or `.env`.
+- Wallet signatures use `/auth/challenge` + `/auth/token/wallet` with a per-address nonce. Tune the expiry via `WALLET_CHALLENGE_TTL_SECONDS` (default `300`).
+- The CLI helper issues tokens locally: `cargo run -p dex-api --bin issue_token -- --trader-id alice --ttl-seconds 600`.
+
+### Market data streams
+
+- Retrieve depth snapshots via `GET /orderbook/depth?levels=10`.
+- Subscribe to real-time updates using the WebSocket feed at `/ws/depth?levels=10` (the UI connects automatically and falls back to manual refresh when needed).
+
+### Codex AI Assistant
+
+This project includes Codex AI assistant integration for rapid development:
+
+```bash
+# On Windows:
+codex.bat "Generate a new trading pair struct"
+
+# On Unix-like systems:
+chmod +x codex.sh
+./codex.sh "Create a function to calculate trading fees"
+```
+
+For more detailed instructions, see [RUNNING-CODEX-IN-WSL.MD](RUNNING-CODEX-IN-WSL.MD).
 
 ## Architecture
 

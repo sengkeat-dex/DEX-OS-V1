@@ -3,7 +3,7 @@
 //! This module provides database functionality for persisting orders,
 //! trades, and other DEX-related data.
 
-use dex_core::types::{Order, OrderId, TraderId, TradingPair, Trade, TradeId};
+use dex_core::types::{Order, OrderId, Trade, TradeId, TraderId, TradingPair};
 use sqlx_core::{query::query, row::Row};
 use sqlx_postgres::{PgPool, PgPoolOptions};
 use thiserror::Error;
@@ -185,7 +185,10 @@ impl DatabaseManager {
     }
 
     /// Get all trades for a specific order
-    pub async fn get_trades_for_order(&self, order_id: OrderId) -> Result<Vec<Trade>, DatabaseError> {
+    pub async fn get_trades_for_order(
+        &self,
+        order_id: OrderId,
+    ) -> Result<Vec<Trade>, DatabaseError> {
         let rows = query(
             r#"
             SELECT 
@@ -218,7 +221,10 @@ impl DatabaseManager {
     }
 
     /// Get all trades for a specific trader
-    pub async fn get_trades_for_trader(&self, trader_id: &TraderId) -> Result<Vec<Trade>, DatabaseError> {
+    pub async fn get_trades_for_trader(
+        &self,
+        trader_id: &TraderId,
+    ) -> Result<Vec<Trade>, DatabaseError> {
         let rows = query(
             r#"
             SELECT 
@@ -267,7 +273,9 @@ impl DatabaseManager {
     /// Create a database manager backed by a lazily connected pool. Useful in tests that do
     /// not exercise the database but need a handle for wiring filters.
     pub fn connect_lazy(database_url: &str) -> Result<Self, DatabaseError> {
-        let pool = PgPoolOptions::new().max_connections(1).connect_lazy(database_url)?;
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy(database_url)?;
         Ok(Self { pool })
     }
 }

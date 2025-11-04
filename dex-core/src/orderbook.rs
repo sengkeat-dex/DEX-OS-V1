@@ -1,8 +1,9 @@
 //! Orderbook implementation for the DEX-OS core engine
 
-use crate::types::{OrderId, Order, OrderSide, Price, Quantity, Trade};
 use crate::merkle_tree::MerkleTree;
-use std::collections::{BTreeMap, HashMap};
+use crate::types::{Order, OrderId, OrderSide, Price, Quantity, Trade};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 
 /// Represents a level in the orderbook with a specific price
 #[derive(Debug, Clone)]
@@ -10,6 +11,27 @@ pub struct PriceLevel {
     pub price: Price,
     pub orders: Vec<OrderId>,
     pub total_quantity: Quantity,
+}
+
+/// Wrapper for OrderId to implement Ord trait for time priority queue
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TimePriorityOrder {
+    timestamp: u64,
+    order_id: OrderId,
+}
+
+// Implement Ord for TimePriorityOrder to create a min-heap based on timestamp (earliest first)
+impl Ord for TimePriorityOrder {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Reverse the comparison to make it a min-heap (earliest timestamp first)
+        other.timestamp.cmp(&self.timestamp)
+    }
+}
+
+impl PartialOrd for TimePriorityOrder {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Main orderbook structure
@@ -21,6 +43,14 @@ pub struct OrderBook {
     pub asks: BTreeMap<Price, PriceLevel>,
     /// All orders indexed by ID for quick lookup
     pub orders: HashMap<OrderId, Order>,
+    /// Time priority queue for efficient order processing (min-heap based on timestamp)
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Heap,Time Priority Queue,High"
+    pub time_priority_queue: BinaryHeap<Reverse<TimePriorityOrder>>,
+    /// Transaction mempool for pending transactions (FIFO queue)
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Queue,Transaction Mempool,High"
+    pub transaction_mempool: VecDeque<Order>,
 }
 
 impl OrderBook {
@@ -30,14 +60,26 @@ impl OrderBook {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             orders: HashMap::new(),
+            time_priority_queue: BinaryHeap::new(),
+            transaction_mempool: VecDeque::new(),
         }
     }
 
     /// Add an order to the orderbook and match it against existing orders
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Price-Time Priority,Order Matching,High"
     pub fn add_order(&mut self, order: Order) -> Result<Vec<Trade>, OrderBookError> {
         // Store the order
         let order_id = order.id;
         self.orders.insert(order_id, order.clone());
+
+        // Add order to time priority queue
+        // This implements the Priority 1 feature from DEX-OS-V1.csv:
+        // "Core Trading,Orderbook,Orderbook,Heap,Time Priority Queue,High"
+        self.time_priority_queue.push(Reverse(TimePriorityOrder {
+            timestamp: order.timestamp,
+            order_id: order.id,
+        }));
 
         // Try to match the order
         let trades = self.match_order(&order);
@@ -54,7 +96,32 @@ impl OrderBook {
         Ok(trades)
     }
 
-    /// Match an order against existing orders in the book
+    /// Add an order to the transaction mempool
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Queue,Transaction Mempool,High"
+    pub fn add_to_mempool(&mut self, order: Order) {
+        self.transaction_mempool.push_back(order);
+    }
+
+    /// Process the next order from the transaction mempool
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Queue,Transaction Mempool,High"
+    pub fn process_next_from_mempool(&mut self) -> Option<Result<Vec<Trade>, OrderBookError>> {
+        self.transaction_mempool
+            .pop_front()
+            .map(|order| self.add_order(order))
+    }
+
+    /// Get the number of pending transactions in the mempool
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Queue,Transaction Mempool,High"
+    pub fn mempool_size(&self) -> usize {
+        self.transaction_mempool.len()
+    }
+
+    /// Match an order against existing orders in the book using price-time priority
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Price-Time Priority,Order Matching,High"
     fn match_order(&mut self, order: &Order) -> Vec<Trade> {
         let mut trades = Vec::new();
         let mut remaining_quantity = order.quantity;
@@ -63,7 +130,7 @@ impl OrderBook {
             OrderSide::Buy => {
                 // Match against asks (sell orders)
                 let mut asks_to_remove = Vec::new();
-                
+
                 // Iterate through asks in ascending price order
                 for (&ask_price, ask_level) in self.asks.iter_mut() {
                     // If this is a limit order and the ask price is higher than our limit, stop matching
@@ -72,13 +139,15 @@ impl OrderBook {
                             break;
                         }
                     }
-                    
-                    // Match against orders at this price level
+
+                    // Match against orders at this price level in time priority (FIFO)
+                    // Orders are processed in the order they were added to the vector (FIFO)
                     let mut orders_to_remove = Vec::new();
                     for &ask_order_id in &ask_level.orders {
                         if let Some(ask_order) = self.orders.get(&ask_order_id) {
-                            let trade_quantity = std::cmp::min(remaining_quantity, ask_order.quantity);
-                            
+                            let trade_quantity =
+                                std::cmp::min(remaining_quantity, ask_order.quantity);
+
                             // Create a trade
                             let trade = Trade {
                                 id: 0, // This will be set by the trade ID counter in the API
@@ -93,11 +162,11 @@ impl OrderBook {
                                     .unwrap()
                                     .as_secs(),
                             };
-                            
+
                             trades.push(trade);
                             remaining_quantity -= trade_quantity;
-                            
-                            // If the ask order is fully filled, remove it
+
+                            // If the ask order is fully filled, mark it for removal
                             if trade_quantity >= ask_order.quantity {
                                 orders_to_remove.push(ask_order_id);
                             } else {
@@ -106,32 +175,33 @@ impl OrderBook {
                                     ask_order_mut.quantity -= trade_quantity;
                                 }
                             }
-                            
+
                             // If the taker order is fully filled, stop matching
                             if remaining_quantity == 0 {
                                 break;
                             }
                         }
                     }
-                    
+
                     // Remove fully filled ask orders
                     for order_id in orders_to_remove {
                         ask_level.orders.retain(|&id| id != order_id);
-                        ask_level.total_quantity -= self.orders.get(&order_id).map(|o| o.quantity).unwrap_or(0);
+                        ask_level.total_quantity -=
+                            self.orders.get(&order_id).map(|o| o.quantity).unwrap_or(0);
                         self.orders.remove(&order_id);
                     }
-                    
+
                     // If the price level is empty, mark it for removal
                     if ask_level.orders.is_empty() {
                         asks_to_remove.push(ask_price);
                     }
-                    
+
                     // If the taker order is fully filled, stop matching
                     if remaining_quantity == 0 {
                         break;
                     }
                 }
-                
+
                 // Remove empty ask price levels
                 for price in asks_to_remove {
                     self.asks.remove(&price);
@@ -140,7 +210,7 @@ impl OrderBook {
             OrderSide::Sell => {
                 // Match against bids (buy orders)
                 let mut bids_to_remove = Vec::new();
-                
+
                 // Iterate through bids in descending price order
                 for (&bid_price, bid_level) in self.bids.iter_mut().rev() {
                     // If this is a limit order and the bid price is lower than our limit, stop matching
@@ -149,13 +219,15 @@ impl OrderBook {
                             break;
                         }
                     }
-                    
-                    // Match against orders at this price level
+
+                    // Match against orders at this price level in time priority (FIFO)
+                    // Orders are processed in the order they were added to the vector (FIFO)
                     let mut orders_to_remove = Vec::new();
                     for &bid_order_id in &bid_level.orders {
                         if let Some(bid_order) = self.orders.get(&bid_order_id) {
-                            let trade_quantity = std::cmp::min(remaining_quantity, bid_order.quantity);
-                            
+                            let trade_quantity =
+                                std::cmp::min(remaining_quantity, bid_order.quantity);
+
                             // Create a trade
                             let trade = Trade {
                                 id: 0, // This will be set by the trade ID counter in the API
@@ -170,11 +242,11 @@ impl OrderBook {
                                     .unwrap()
                                     .as_secs(),
                             };
-                            
+
                             trades.push(trade);
                             remaining_quantity -= trade_quantity;
-                            
-                            // If the bid order is fully filled, remove it
+
+                            // If the bid order is fully filled, mark it for removal
                             if trade_quantity >= bid_order.quantity {
                                 orders_to_remove.push(bid_order_id);
                             } else {
@@ -183,32 +255,33 @@ impl OrderBook {
                                     bid_order_mut.quantity -= trade_quantity;
                                 }
                             }
-                            
+
                             // If the taker order is fully filled, stop matching
                             if remaining_quantity == 0 {
                                 break;
                             }
                         }
                     }
-                    
+
                     // Remove fully filled bid orders
                     for order_id in orders_to_remove {
                         bid_level.orders.retain(|&id| id != order_id);
-                        bid_level.total_quantity -= self.orders.get(&order_id).map(|o| o.quantity).unwrap_or(0);
+                        bid_level.total_quantity -=
+                            self.orders.get(&order_id).map(|o| o.quantity).unwrap_or(0);
                         self.orders.remove(&order_id);
                     }
-                    
+
                     // If the price level is empty, mark it for removal
                     if bid_level.orders.is_empty() {
                         bids_to_remove.push(bid_price);
                     }
-                    
+
                     // If the taker order is fully filled, stop matching
                     if remaining_quantity == 0 {
                         break;
                     }
                 }
-                
+
                 // Remove empty bid price levels
                 for price in bids_to_remove {
                     self.bids.remove(&price);
@@ -220,36 +293,50 @@ impl OrderBook {
     }
 
     /// Add a bid order to the orderbook
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Vector,Order Queue,High"
+    /// and "Core Trading,Orderbook,Orderbook,Red-Black Tree,Price Level Storage,High"
     fn add_bid(&mut self, order: Order) {
         if let Some(price) = order.price {
-            self.bids.entry(price).and_modify(|level| {
-                level.orders.push(order.id);
-                level.total_quantity += order.quantity;
-            }).or_insert(PriceLevel {
-                price,
-                orders: vec![order.id],
-                total_quantity: order.quantity,
-            });
+            self.bids
+                .entry(price)
+                .and_modify(|level| {
+                    level.orders.push(order.id);
+                    level.total_quantity += order.quantity;
+                })
+                .or_insert(PriceLevel {
+                    price,
+                    orders: vec![order.id],
+                    total_quantity: order.quantity,
+                });
         }
     }
 
     /// Add an ask order to the orderbook
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Vector,Order Queue,High"
+    /// and "Core Trading,Orderbook,Orderbook,Red-Black Tree,Price Level Storage,High"
     fn add_ask(&mut self, order: Order) {
         if let Some(price) = order.price {
-            self.asks.entry(price).and_modify(|level| {
-                level.orders.push(order.id);
-                level.total_quantity += order.quantity;
-            }).or_insert(PriceLevel {
-                price,
-                orders: vec![order.id],
-                total_quantity: order.quantity,
-            });
+            self.asks
+                .entry(price)
+                .and_modify(|level| {
+                    level.orders.push(order.id);
+                    level.total_quantity += order.quantity;
+                })
+                .or_insert(PriceLevel {
+                    price,
+                    orders: vec![order.id],
+                    total_quantity: order.quantity,
+                });
         }
     }
 
     /// Remove an order from the orderbook
     pub fn remove_order(&mut self, order_id: OrderId) -> Result<Order, OrderBookError> {
-        let order = self.orders.remove(&order_id)
+        let order = self
+            .orders
+            .remove(&order_id)
             .ok_or(OrderBookError::OrderNotFound)?;
 
         match order.side {
@@ -314,15 +401,36 @@ impl OrderBook {
         for order in orders {
             // In a real implementation, you would serialize the order properly
             // For this example, we'll use a simple representation
-            let data = format!("{}:{}:{}:{}", order.id, order.trader_id, order.quantity, order.timestamp);
+            let data = format!(
+                "{}:{}:{}:{}",
+                order.id, order.trader_id, order.quantity, order.timestamp
+            );
             order_data.push(data.into_bytes());
         }
 
         // Create the Merkle tree
         let tree = MerkleTree::from_data(&order_data);
-        
+
         // Return the root hash as the batch proof
         tree.root_hash()
+    }
+
+    /// Get the next order to process based on time priority
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Heap,Time Priority Queue,High"
+    pub fn get_next_order_by_time(&mut self) -> Option<OrderId> {
+        self.time_priority_queue
+            .pop()
+            .map(|Reverse(order)| order.order_id)
+    }
+
+    /// Peek at the next order to process based on time priority without removing it
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Heap,Time Priority Queue,High"
+    pub fn peek_next_order_by_time(&self) -> Option<OrderId> {
+        self.time_priority_queue
+            .peek()
+            .map(|Reverse(order)| order.order_id)
     }
 }
 
@@ -336,7 +444,7 @@ pub enum OrderBookError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{TradingPair, OrderType};
+    use crate::types::{OrderType, TradingPair};
 
     #[test]
     fn test_orderbook_creation() {
@@ -495,5 +603,325 @@ mod tests {
         let remaining_sell_order = orderbook.get_order(1);
         assert!(remaining_sell_order.is_some());
         assert_eq!(remaining_sell_order.unwrap().quantity, 50);
+    }
+
+    /// Test price-time priority matching
+    /// This test verifies that orders at the same price level are matched in FIFO order
+    /// Implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Price-Time Priority,Order Matching,High"
+    #[test]
+    fn test_price_time_priority_matching() {
+        let mut orderbook = OrderBook::new();
+        let pair = TradingPair {
+            base: "BTC".to_string(),
+            quote: "USD".to_string(),
+        };
+
+        // Add multiple sell orders at the same price (50000) but different times
+        // Order 1 (timestamp 1000) should be matched first due to FIFO
+        let sell_order1 = Order {
+            id: 1,
+            trader_id: "seller1".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Sell,
+            order_type: OrderType::Limit,
+            price: Some(50000),
+            quantity: 50,
+            timestamp: 1000, // Earlier timestamp
+        };
+
+        // Order 2 (timestamp 2000) should be matched second
+        let sell_order2 = Order {
+            id: 2,
+            trader_id: "seller2".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Sell,
+            order_type: OrderType::Limit,
+            price: Some(50000),
+            quantity: 50,
+            timestamp: 2000, // Later timestamp
+        };
+
+        // Order 3 (timestamp 3000) should be matched third
+        let sell_order3 = Order {
+            id: 3,
+            trader_id: "seller3".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Sell,
+            order_type: OrderType::Limit,
+            price: Some(50000),
+            quantity: 50,
+            timestamp: 3000, // Latest timestamp
+        };
+
+        // Add all sell orders to the orderbook
+        assert!(orderbook.add_order(sell_order1).is_ok());
+        assert!(orderbook.add_order(sell_order2).is_ok());
+        assert!(orderbook.add_order(sell_order3).is_ok());
+
+        // Verify all orders are in the orderbook
+        assert_eq!(orderbook.orders.len(), 3);
+        assert_eq!(orderbook.asks.len(), 1); // All at the same price level
+        assert_eq!(orderbook.asks.get(&50000).unwrap().orders.len(), 3);
+
+        // Add a large buy order that will match all sell orders
+        let buy_order = Order {
+            id: 4,
+            trader_id: "buyer".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            price: Some(50000),
+            quantity: 150, // Large enough to match all sell orders
+            timestamp: 4000,
+        };
+
+        // Execute the matching
+        let trades = orderbook.add_order(buy_order).unwrap();
+
+        // Verify we have 3 trades
+        assert_eq!(trades.len(), 3);
+
+        // Verify the matching order follows FIFO (price-time priority):
+        // 1. Order 1 (earliest timestamp) should be matched first
+        assert_eq!(trades[0].maker_order_id, 1);
+        assert_eq!(trades[0].price, 50000);
+        assert_eq!(trades[0].quantity, 50);
+
+        // 2. Order 2 (middle timestamp) should be matched second
+        assert_eq!(trades[1].maker_order_id, 2);
+        assert_eq!(trades[1].price, 50000);
+        assert_eq!(trades[1].quantity, 50);
+
+        // 3. Order 3 (latest timestamp) should be matched third
+        assert_eq!(trades[2].maker_order_id, 3);
+        assert_eq!(trades[2].price, 50000);
+        assert_eq!(trades[2].quantity, 50);
+
+        // Verify all sell orders have been removed from the orderbook
+        assert_eq!(orderbook.orders.len(), 1); // Only the buy order remains
+        assert_eq!(orderbook.orders.get(&4).unwrap().id, 4); // The buy order
+        assert_eq!(orderbook.asks.len(), 0); // No more asks
+    }
+
+    /// Test price priority matching
+    /// This test verifies that orders are matched based on price priority first
+    /// Implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Price-Time Priority,Order Matching,High"
+    #[test]
+    fn test_price_priority_matching() {
+        let mut orderbook = OrderBook::new();
+        let pair = TradingPair {
+            base: "BTC".to_string(),
+            quote: "USD".to_string(),
+        };
+
+        // Add sell orders at different prices
+        // Better price (lower) should be matched first
+        let sell_order_high_price = Order {
+            id: 1,
+            trader_id: "seller1".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Sell,
+            order_type: OrderType::Limit,
+            price: Some(51000), // Higher price
+            quantity: 50,
+            timestamp: 1000,
+        };
+
+        let sell_order_low_price = Order {
+            id: 2,
+            trader_id: "seller2".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Sell,
+            order_type: OrderType::Limit,
+            price: Some(50000), // Lower price (better for buyer)
+            quantity: 50,
+            timestamp: 2000,
+        };
+
+        // Add sell orders to the orderbook
+        assert!(orderbook.add_order(sell_order_high_price).is_ok());
+        assert!(orderbook.add_order(sell_order_low_price).is_ok());
+
+        // Verify orders are in the orderbook
+        assert_eq!(orderbook.orders.len(), 2);
+        assert_eq!(orderbook.asks.len(), 2); // Two different price levels
+
+        // Add a buy order that will match sell orders
+        let buy_order = Order {
+            id: 3,
+            trader_id: "buyer".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            price: Some(52000), // High enough to match both sell orders
+            quantity: 100,
+            timestamp: 3000,
+        };
+
+        // Execute the matching
+        let trades = orderbook.add_order(buy_order).unwrap();
+
+        // Verify we have 2 trades
+        assert_eq!(trades.len(), 2);
+
+        // Verify the matching order follows price priority:
+        // 1. Order 2 (lower price) should be matched first
+        assert_eq!(trades[0].maker_order_id, 2);
+        assert_eq!(trades[0].price, 50000);
+        assert_eq!(trades[0].quantity, 50);
+
+        // 2. Order 1 (higher price) should be matched second
+        assert_eq!(trades[1].maker_order_id, 1);
+        assert_eq!(trades[1].price, 51000);
+        assert_eq!(trades[1].quantity, 50);
+    }
+
+    /// Test Heap Time Priority Queue functionality
+    /// This test verifies that orders can be retrieved in time priority order
+    /// Implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Heap,Time Priority Queue,High"
+    #[test]
+    fn test_heap_time_priority_queue() {
+        let mut orderbook = OrderBook::new();
+        let pair = TradingPair {
+            base: "BTC".to_string(),
+            quote: "USD".to_string(),
+        };
+
+        // Add orders with different timestamps
+        let order1 = Order {
+            id: 1,
+            trader_id: "trader1".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            price: Some(50000),
+            quantity: 100,
+            timestamp: 3000, // Latest timestamp
+        };
+
+        let order2 = Order {
+            id: 2,
+            trader_id: "trader2".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            price: Some(51000),
+            quantity: 200,
+            timestamp: 1000, // Earliest timestamp
+        };
+
+        let order3 = Order {
+            id: 3,
+            trader_id: "trader3".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Sell,
+            order_type: OrderType::Limit,
+            price: Some(52000),
+            quantity: 300,
+            timestamp: 2000, // Middle timestamp
+        };
+
+        // Add orders to the orderbook
+        assert!(orderbook.add_order(order1).is_ok());
+        assert!(orderbook.add_order(order2).is_ok());
+        assert!(orderbook.add_order(order3).is_ok());
+
+        // Verify all orders are in the orderbook
+        assert_eq!(orderbook.orders.len(), 3);
+
+        // Verify time priority queue functionality
+        // Order 2 should be first (earliest timestamp)
+        assert_eq!(orderbook.peek_next_order_by_time(), Some(2));
+        assert_eq!(orderbook.get_next_order_by_time(), Some(2));
+
+        // Order 3 should be next (middle timestamp)
+        assert_eq!(orderbook.peek_next_order_by_time(), Some(3));
+        assert_eq!(orderbook.get_next_order_by_time(), Some(3));
+
+        // Order 1 should be last (latest timestamp)
+        assert_eq!(orderbook.peek_next_order_by_time(), Some(1));
+        assert_eq!(orderbook.get_next_order_by_time(), Some(1));
+
+        // Queue should now be empty
+        assert_eq!(orderbook.peek_next_order_by_time(), None);
+        assert_eq!(orderbook.get_next_order_by_time(), None);
+    }
+
+    /// Test Queue Transaction Mempool functionality
+    /// This test verifies that orders can be added to and processed from the mempool in FIFO order
+    /// Implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,Queue,Transaction Mempool,High"
+    #[test]
+    fn test_queue_transaction_mempool() {
+        let mut orderbook = OrderBook::new();
+        let pair = TradingPair {
+            base: "BTC".to_string(),
+            quote: "USD".to_string(),
+        };
+
+        // Create orders
+        let order1 = Order {
+            id: 1,
+            trader_id: "trader1".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            price: Some(50000),
+            quantity: 100,
+            timestamp: 1000,
+        };
+
+        let order2 = Order {
+            id: 2,
+            trader_id: "trader2".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Sell,
+            order_type: OrderType::Limit,
+            price: Some(51000),
+            quantity: 200,
+            timestamp: 2000,
+        };
+
+        let order3 = Order {
+            id: 3,
+            trader_id: "trader3".to_string(),
+            pair: pair.clone(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            price: Some(52000),
+            quantity: 300,
+            timestamp: 3000,
+        };
+
+        // Add orders to the mempool
+        orderbook.add_to_mempool(order1.clone());
+        orderbook.add_to_mempool(order2.clone());
+        orderbook.add_to_mempool(order3.clone());
+
+        // Verify mempool size
+        assert_eq!(orderbook.mempool_size(), 3);
+
+        // Process orders from mempool (FIFO order)
+        let result1 = orderbook.process_next_from_mempool();
+        assert!(result1.is_some());
+        assert!(result1.unwrap().is_ok());
+        assert_eq!(orderbook.mempool_size(), 2);
+
+        let result2 = orderbook.process_next_from_mempool();
+        assert!(result2.is_some());
+        assert!(result2.unwrap().is_ok());
+        assert_eq!(orderbook.mempool_size(), 1);
+
+        let result3 = orderbook.process_next_from_mempool();
+        assert!(result3.is_some());
+        assert!(result3.unwrap().is_ok());
+        assert_eq!(orderbook.mempool_size(), 0);
+
+        // Try to process from empty mempool
+        let result4 = orderbook.process_next_from_mempool();
+        assert!(result4.is_none());
     }
 }

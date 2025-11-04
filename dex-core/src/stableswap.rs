@@ -1,11 +1,11 @@
 //! StableSwap AMM implementation for the DEX-OS core engine
 //!
-//! This module implements the StableSwap invariant (x^3 * y + y^3 * x = k) 
+//! This module implements the StableSwap invariant (x^3 * y + y^3 * x = k)
 //! for providing low slippage trades between pegged assets.
 //! This implements the Priority 2 feature from DEX-OS-V1.csv:
 //! "Core Trading,AMM,AMM,Curve Fitting,StableSwap,High"
 
-use crate::types::{TokenId, Quantity};
+use crate::types::{Quantity, TokenId};
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -59,7 +59,7 @@ impl StableSwapAMM {
             let new_reserve_a = reserve_a + amount_a;
             let new_reserve_b = reserve_b + amount_b;
             let new_d = self.calculate_invariant(new_reserve_a, new_reserve_b)?;
-            
+
             ((new_d - d) * self.total_supply) / d
         };
 
@@ -107,8 +107,14 @@ impl StableSwapAMM {
         to_token: TokenId,
         amount_in: Quantity,
     ) -> Result<Quantity, StableSwapError> {
-        let reserve_in = *self.reserves.get(&from_token).ok_or(StableSwapError::InvalidToken)?;
-        let reserve_out = *self.reserves.get(&to_token).ok_or(StableSwapError::InvalidToken)?;
+        let reserve_in = *self
+            .reserves
+            .get(&from_token)
+            .ok_or(StableSwapError::InvalidToken)?;
+        let reserve_out = *self
+            .reserves
+            .get(&to_token)
+            .ok_or(StableSwapError::InvalidToken)?;
 
         if reserve_in == 0 || reserve_out == 0 {
             return Err(StableSwapError::InsufficientLiquidity);
@@ -116,17 +122,17 @@ impl StableSwapAMM {
 
         // Calculate amount out with fee using StableSwap invariant
         let amount_in_with_fee = (amount_in * (10000 - self.fee) as u64) / 10000;
-        
+
         // Using simplified approach for StableSwap calculation
         // In a production implementation, this would use Newton-Raphson method for precision
         let d = self.calculate_invariant(reserve_in, reserve_out)?;
-        
+
         // New reserve of input token
         let new_reserve_in = reserve_in + amount_in_with_fee;
-        
+
         // Calculate new reserve of output token using the invariant
         let new_reserve_out = self.calculate_y_given_d_and_x(d, new_reserve_in)?;
-        
+
         let amount_out = reserve_out - new_reserve_out;
 
         if amount_out >= reserve_out {
@@ -145,7 +151,7 @@ impl StableSwapAMM {
         if self.amplification == 0 {
             return Err(StableSwapError::InvalidAmplification);
         }
-        
+
         if x == 0 && y == 0 {
             return Ok(0);
         }
@@ -155,7 +161,7 @@ impl StableSwapAMM {
         if y == 0 {
             return Ok(x);
         }
-        
+
         const N_COINS: u128 = 2;
         const MAX_ITERATIONS: u32 = 256;
 
@@ -211,15 +217,19 @@ impl StableSwapAMM {
     }
 
     /// Calculate y given D and x using the StableSwap invariant with Newton-Raphson method
-    /// 
+    ///
     /// This implements the Newton-Raphson method for numerical computation
     /// as specified in DEX-OS-V1.csv for AMM Numerical Computation:
     /// "Core Trading,AMM,AMM,Newton-Raphson Method,Numerical Computation,Medium"
-    fn calculate_y_given_d_and_x(&self, d: Quantity, x: Quantity) -> Result<Quantity, StableSwapError> {
+    fn calculate_y_given_d_and_x(
+        &self,
+        d: Quantity,
+        x: Quantity,
+    ) -> Result<Quantity, StableSwapError> {
         if self.amplification == 0 {
             return Err(StableSwapError::InvalidAmplification);
         }
-        
+
         if d == 0 {
             return Ok(0);
         }
@@ -252,7 +262,10 @@ impl StableSwapAMM {
             .ok_or(StableSwapError::NumericalOverflow)?;
 
         let b = x_u
-            .checked_add(d_u.checked_div(ann).ok_or(StableSwapError::NumericalOverflow)?)
+            .checked_add(
+                d_u.checked_div(ann)
+                    .ok_or(StableSwapError::NumericalOverflow)?,
+            )
             .ok_or(StableSwapError::NumericalOverflow)?;
 
         let mut y = d_u;
@@ -289,9 +302,19 @@ impl StableSwapAMM {
     }
 
     /// Get the price of one token in terms of another
-    pub fn get_price(&self, from_token: &TokenId, to_token: &TokenId) -> Result<f64, StableSwapError> {
-        let reserve_in = *self.reserves.get(from_token).ok_or(StableSwapError::InvalidToken)?;
-        let reserve_out = *self.reserves.get(to_token).ok_or(StableSwapError::InvalidToken)?;
+    pub fn get_price(
+        &self,
+        from_token: &TokenId,
+        to_token: &TokenId,
+    ) -> Result<f64, StableSwapError> {
+        let reserve_in = *self
+            .reserves
+            .get(from_token)
+            .ok_or(StableSwapError::InvalidToken)?;
+        let reserve_out = *self
+            .reserves
+            .get(to_token)
+            .ok_or(StableSwapError::InvalidToken)?;
 
         if reserve_in == 0 {
             return Err(StableSwapError::InsufficientLiquidity);
@@ -333,12 +356,14 @@ mod tests {
         let token_a = "DAI".to_string();
         let token_b = "USDC".to_string();
 
-        let liquidity_tokens = amm.add_liquidity(
-            token_a.clone(),
-            1000000,  // 1,000,000 DAI
-            token_b.clone(),
-            1000000,  // 1,000,000 USDC
-        ).unwrap();
+        let liquidity_tokens = amm
+            .add_liquidity(
+                token_a.clone(),
+                1000000, // 1,000,000 DAI
+                token_b.clone(),
+                1000000, // 1,000,000 USDC
+            )
+            .unwrap();
 
         assert!(liquidity_tokens > 0);
         assert_eq!(amm.total_supply, liquidity_tokens);
@@ -353,34 +378,32 @@ mod tests {
         let token_b = "USDC".to_string();
 
         // Add initial liquidity
-        amm.add_liquidity(
-            token_a.clone(),
-            1000000,
-            token_b.clone(),
-            1000000,
-        ).unwrap();
+        amm.add_liquidity(token_a.clone(), 1000000, token_b.clone(), 1000000)
+            .unwrap();
 
         // Perform a swap
-        let amount_out = amm.swap(
-            token_a.clone(),
-            token_b.clone(),
-            10000,  // Swap 10,000 DAI
-        ).unwrap();
+        let amount_out = amm
+            .swap(
+                token_a.clone(),
+                token_b.clone(),
+                10000, // Swap 10,000 DAI
+            )
+            .unwrap();
 
         assert!(amount_out > 0);
         assert!(amount_out < 10000); // Amount out should be less due to fee and slippage
     }
-    
+
     #[test]
     fn test_newton_raphson_invariant_calculation() {
         let amm = StableSwapAMM::new(100, 1000); // 1% fee, amplification factor 1000
-        
+
         // Test with equal reserves
         let d = amm.calculate_invariant(1000000, 1000000).unwrap();
         assert!(d > 0);
         // For equal reserves with high amplification, D should be close to sum of reserves
         assert!((d as i64 - 2000000).abs() < 10000);
-        
+
         // Test with unequal reserves
         let d = amm.calculate_invariant(1000000, 2000000).unwrap();
         assert!(d > 0);
@@ -390,58 +413,58 @@ mod tests {
         assert!(d > 2 * geom_mean);
         assert!(d < sum);
     }
-    
+
     #[test]
     fn test_newton_raphson_y_calculation() {
         let amm = StableSwapAMM::new(100, 1000); // 1% fee, amplification factor 1000
-        
+
         // Calculate D for initial state
         let d = amm.calculate_invariant(1000000, 1000000).unwrap();
-        
+
         // Calculate y given D and x
         let y = amm.calculate_y_given_d_and_x(d, 1000000).unwrap();
-        
+
         // Should be close to original y value
         assert!((y as i64 - 1000000).abs() < 1000);
-        
+
         // Test with different x value
         let y = amm.calculate_y_given_d_and_x(d, 1500000).unwrap();
         assert!(y > 0);
         // When x increases, y should decrease to maintain invariant
         assert!(y < 1000000);
     }
-    
+
     #[test]
     fn test_newton_raphson_precision() {
         let amm = StableSwapAMM::new(50, 500); // 0.5% fee, amplification factor 500
-        
+
         // Test that the invariant calculation is self-consistent
         let x = 1000000;
         let y = 2000000;
         let d = amm.calculate_invariant(x, y).unwrap();
-        
+
         // Verify that calculating y from D and x gives us back approximately y
         let calculated_y = amm.calculate_y_given_d_and_x(d, x).unwrap();
         assert!((calculated_y as i64 - y as i64).abs() < 1000);
-        
+
         // Verify that calculating x from D and y gives us back approximately x
         let calculated_x = amm.calculate_y_given_d_and_x(d, y).unwrap();
         assert!((calculated_x as i64 - x as i64).abs() < 1000);
     }
-    
+
     #[test]
     fn test_edge_cases() {
         let amm = StableSwapAMM::new(100, 1000);
-        
+
         // Test with zero amplification (should error)
         let zero_amp_amm = StableSwapAMM::new(100, 0);
         assert!(zero_amp_amm.calculate_invariant(1000, 1000).is_err());
         assert!(zero_amp_amm.calculate_y_given_d_and_x(1000, 500).is_err());
-        
+
         // Test with zero reserves
         let d = amm.calculate_invariant(0, 0).unwrap();
         assert_eq!(d, 0);
-        
+
         // Test with one zero reserve
         let d = amm.calculate_invariant(1000, 0).unwrap();
         assert!(d > 0);

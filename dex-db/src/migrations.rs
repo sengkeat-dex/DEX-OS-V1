@@ -96,21 +96,20 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx_core::error::Error
     // Run pending migrations
     for migration in migrations {
         if migration.version > current_version {
-            println!("Running migration {}: {}", migration.version, migration.description);
-            
+            println!(
+                "Running migration {}: {}",
+                migration.version, migration.description
+            );
+
             // Run the migration SQL
-            query(migration.sql)
-                .execute(pool)
-                .await?;
+            query(migration.sql).execute(pool).await?;
 
             // Record the migration
-            query(
-                "INSERT INTO migrations (version, description) VALUES ($1, $2)"
-            )
-            .bind(migration.version)
-            .bind(migration.description)
-            .execute(pool)
-            .await?;
+            query("INSERT INTO migrations (version, description) VALUES ($1, $2)")
+                .bind(migration.version)
+                .bind(migration.description)
+                .execute(pool)
+                .await?;
         }
     }
 
