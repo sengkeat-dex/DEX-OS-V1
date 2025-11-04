@@ -89,4 +89,4 @@ For detailed instructions on installing Git, see [GIT-INSTALLATION-GUIDE.md](GIT
 
 ## License
 
-This project is licensed under the MIT License.# DEX-OS-V1
+This project is licensed under the MIT License.

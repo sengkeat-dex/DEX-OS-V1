@@ -1,0 +1,14 @@
+[package]
+name = "dex-db"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+dex-core = { path = "../dex-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx-core = { version = "0.8", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "json"] }
+sqlx-postgres = { version = "0.8", default-features = false, features = ["chrono", "uuid", "json"] }
+thiserror = "1.0"
