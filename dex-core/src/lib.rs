@@ -1,6 +1,8 @@
 //! DEX-OS core engine library
 
 pub mod amm;
+pub mod avl_tree;
+pub mod cross_chain_asset_mapping;
 pub mod fee_distribution;
 pub mod fee_management;
 pub mod merkle_tree;

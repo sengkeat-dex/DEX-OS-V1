@@ -9,7 +9,8 @@ Development Priority,Category,Component,Algorithm/Data Structure,Feature,Task Pr
 1,Core Trading,AMM,AMM,Constant Product (x*y=k),Pool Pricing,High [IMPLEMENTED]
 1,Core Trading,AMM,AMM,StableSwap Invariant,Pool Pricing,High [IMPLEMENTED]
 1,Core Trading,AMM,AMM,Concentrated Liquidity,Tick-based Positioning,High [IMPLEMENTED]
-1,Core Trading,AMM,AMM,Hash Map,Token Pair Reserves,High
+1,Core Trading,AMM,AMM,Hash Map,Token Pair Reserves,High [IMPLEMENTED]
+
 1,Core Trading,DEX Aggregator,DEX Aggregator,Graph,DEX Liquidity Network,High
 1,Core Trading,DEX Aggregator,DEX Aggregator,Hash Map,Route Caching,High
 1,Core Trading,DEX Aggregator,DEX Aggregator,Max-Heap (implicit),Best Route Selection,High
@@ -68,8 +69,8 @@ Development Priority,Category,Component,Algorithm/Data Structure,Feature,Task Pr
 2,Components,Security Layer,Security,Kyber Encryption,Encryption,High
 2,Components,Security Layer,Security,Dilithium Signatures,Signatures,High
 2,Components,Security Layer,Security,STARK ZK,Zero-Knowledge Proofs,High
-3,Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium
-3,Core Trading,Bridge,Bridge,Hash Map,Cross-chain Asset Mapping,Medium
+3,Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium [IMPLEMENTED]
+3,Core Trading,Bridge,Bridge,Hash Map,Cross-chain Asset Mapping,Medium [IMPLEMENTED]
 3,Core Trading,Governance,Governance,Quadratic Voting,Decision Making,Medium
 3,Core Trading,Governance,Governance,Snapshot Mechanism,Off-chain Voting,Medium
 3,Core Trading,Keeper,Keeper,Health Check,Service Monitoring,Medium

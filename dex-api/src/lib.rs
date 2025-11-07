@@ -130,6 +130,11 @@ pub struct DepthSnapshot {
     pub timestamp: u64,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct DepthQuery {
+    levels: Option<usize>,
+}
+
 const DEFAULT_DEPTH_LEVELS: usize = 10;
 const STREAM_DEPTH_LEVELS: usize = 20;
 const MAX_DEPTH_LEVELS: usize = 100;

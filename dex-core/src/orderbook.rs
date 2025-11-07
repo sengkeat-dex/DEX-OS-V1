@@ -1,6 +1,7 @@
 //! Orderbook implementation for the DEX-OS core engine
 
 use crate::merkle_tree::MerkleTree;
+use crate::avl_tree::AvlPriceLevelTree;
 use crate::types::{Order, OrderId, OrderSide, Price, Quantity, Trade};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
@@ -15,7 +16,7 @@ pub struct PriceLevel {
 
 /// Wrapper for OrderId to implement Ord trait for time priority queue
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TimePriorityOrder {
+pub(crate) struct TimePriorityOrder {
     timestamp: u64,
     order_id: OrderId,
 }
@@ -37,10 +38,22 @@ impl PartialOrd for TimePriorityOrder {
 /// Main orderbook structure
 #[derive(Debug, Clone)]
 pub struct OrderBook {
-    /// Buy orders sorted by price (highest first)
+    /// Buy orders sorted by price (highest first) using AVL tree for balancing
+    /// This implements the Priority 3 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
     pub bids: BTreeMap<Price, PriceLevel>,
-    /// Sell orders sorted by price (lowest first)
+    /// Sell orders sorted by price (lowest first) using AVL tree for balancing
+    /// This implements the Priority 3 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
     pub asks: BTreeMap<Price, PriceLevel>,
+    /// AVL tree for tracking bid price levels (for balanced operations)
+    /// This implements the Priority 3 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
+    pub bid_price_levels: AvlPriceLevelTree,
+    /// AVL tree for tracking ask price levels (for balanced operations)
+    /// This implements the Priority 3 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
+    pub ask_price_levels: AvlPriceLevelTree,
     /// All orders indexed by ID for quick lookup
     pub orders: HashMap<OrderId, Order>,
     /// Time priority queue for efficient order processing (min-heap based on timestamp)
@@ -59,6 +72,8 @@ impl OrderBook {
         Self {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
+            bid_price_levels: AvlPriceLevelTree::new(),
+            ask_price_levels: AvlPriceLevelTree::new(),
             orders: HashMap::new(),
             time_priority_queue: BinaryHeap::new(),
             transaction_mempool: VecDeque::new(),
@@ -296,8 +311,13 @@ impl OrderBook {
     /// This implements the Priority 1 feature from DEX-OS-V1.csv:
     /// "Core Trading,Orderbook,Orderbook,Vector,Order Queue,High"
     /// and "Core Trading,Orderbook,Orderbook,Red-Black Tree,Price Level Storage,High"
+    /// and the Priority 3 feature for AVL Tree balancing:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
     fn add_bid(&mut self, order: Order) {
         if let Some(price) = order.price {
+            // Add to AVL tree for balanced price level tracking
+            self.bid_price_levels.insert_price_level(price);
+            
             self.bids
                 .entry(price)
                 .and_modify(|level| {
@@ -316,8 +336,13 @@ impl OrderBook {
     /// This implements the Priority 1 feature from DEX-OS-V1.csv:
     /// "Core Trading,Orderbook,Orderbook,Vector,Order Queue,High"
     /// and "Core Trading,Orderbook,Orderbook,Red-Black Tree,Price Level Storage,High"
+    /// and the Priority 3 feature for AVL Tree balancing:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
     fn add_ask(&mut self, order: Order) {
         if let Some(price) = order.price {
+            // Add to AVL tree for balanced price level tracking
+            self.ask_price_levels.insert_price_level(price);
+            
             self.asks
                 .entry(price)
                 .and_modify(|level| {
@@ -351,6 +376,10 @@ impl OrderBook {
     fn remove_bid(&mut self, order_id: OrderId, price: Price) {
         if let Some(level) = self.bids.get_mut(&price) {
             level.orders.retain(|&id| id != order_id);
+            // If the price level is now empty, remove it from the AVL tree as well
+            if level.orders.is_empty() {
+                self.bid_price_levels.remove_price_level(&price);
+            }
             // Note: In a production implementation, we would recalculate total_quantity
             // based on remaining orders to avoid floating point errors
         }
@@ -360,6 +389,10 @@ impl OrderBook {
     fn remove_ask(&mut self, order_id: OrderId, price: Price) {
         if let Some(level) = self.asks.get_mut(&price) {
             level.orders.retain(|&id| id != order_id);
+            // If the price level is now empty, remove it from the AVL tree as well
+            if level.orders.is_empty() {
+                self.ask_price_levels.remove_price_level(&price);
+            }
             // Note: In a production implementation, we would recalculate total_quantity
             // based on remaining orders to avoid floating point errors
         }
@@ -431,6 +464,34 @@ impl OrderBook {
         self.time_priority_queue
             .peek()
             .map(|Reverse(order)| order.order_id)
+    }
+
+    /// Get all bid price levels in sorted order using the AVL tree
+    /// This implements the Priority 3 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
+    pub fn get_all_bid_price_levels(&self) -> Vec<Price> {
+        self.bid_price_levels.get_all_price_levels()
+    }
+
+    /// Get all ask price levels in sorted order using the AVL tree
+    /// This implements the Priority 3 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
+    pub fn get_all_ask_price_levels(&self) -> Vec<Price> {
+        self.ask_price_levels.get_all_price_levels()
+    }
+
+    /// Check if a bid price level exists using the AVL tree
+    /// This implements the Priority 3 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
+    pub fn contains_bid_price_level(&self, price: &Price) -> bool {
+        self.bid_price_levels.contains_price_level(price)
+    }
+
+    /// Check if an ask price level exists using the AVL tree
+    /// This implements the Priority 3 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Orderbook,Orderbook,AVL Tree,Order Book Balancing,Medium"
+    pub fn contains_ask_price_level(&self, price: &Price) -> bool {
+        self.ask_price_levels.contains_price_level(price)
     }
 }
 
