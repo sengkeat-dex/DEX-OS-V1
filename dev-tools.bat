@@ -84,7 +84,7 @@ goto pause
 
 :build_project
 echo [STATUS] Building the project...
-wsl -d Ubuntu-24.04 -e bash -c "source ~/.cargo/env && cd /mnt/c/Users/USER/Documents/DEX-OS-V1 && cargo -Znext-lockfile-bump build"
+wsl -d Ubuntu-24.04 -e bash -c "source ~/.cargo/env && cd /mnt/c/Users/USER/Documents/DEX-OS-V1 && cargo build"
 if %errorlevel% equ 0 (
     echo [STATUS] Project built successfully!
 ) else (
@@ -94,7 +94,7 @@ goto pause
 
 :run_tests
 echo [STATUS] Running tests...
-wsl -d Ubuntu-24.04 -e bash -c "source ~/.cargo/env && cd /mnt/c/Users/USER/Documents/DEX-OS-V1 && cargo -Znext-lockfile-bump test"
+wsl -d Ubuntu-24.04 -e bash -c "source ~/.cargo/env && cd /mnt/c/Users/USER/Documents/DEX-OS-V1 && cargo test"
 if %errorlevel% equ 0 (
     echo [STATUS] All tests passed!
 ) else (
