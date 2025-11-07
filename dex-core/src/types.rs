@@ -66,3 +66,33 @@ pub struct Trade {
     pub quantity: Quantity,
     pub timestamp: u64,
 }
+
+/// Represents a blockchain block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Block {
+    pub id: u64,
+    pub height: u64,
+    pub timestamp: u64,
+    pub transactions: Vec<Transaction>,
+    pub previous_hash: Vec<u8>,
+    pub hash: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
+/// Represents a transaction in the blockchain
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transaction {
+    pub from: String,
+    pub to: String,
+    pub amount: i64,
+    pub nonce: u64,
+    pub signature: Vec<u8>,
+}
+
+/// Represents a validator in the consensus protocol
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Validator {
+    pub id: String,
+    pub public_key: Vec<u8>,
+    pub stake: u64,
+}

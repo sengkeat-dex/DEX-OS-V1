@@ -764,9 +764,9 @@ For Priority 1 features, the following algorithms and data structures must be us
 - **Price Aggregation**: Median Selection and TWAP Calculation
 
 #### Core Components
-- **Quantum-Resistant Consensus**: Rust + GPU + Quantum Consensus
-- **Leader Selection**: QVRF Leader Selection
-- **BFT Core**: Lattice BFT Core
+- **Quantum-Resistant Consensus**: Rust + GPU + Quantum Consensus (Implemented in `dex-core/src/quantum_consensus.rs`)
+- **Leader Selection**: QVRF Leader Selection (Implemented in `dex-core/src/quantum_consensus.rs`)
+- **BFT Core**: Lattice BFT Core (Implemented in `dex-core/src/quantum_consensus.rs`)
 
 ### Priority 2 Algorithm and Data Structure Requirements
 

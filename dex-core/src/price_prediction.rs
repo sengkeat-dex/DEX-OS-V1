@@ -1,10 +1,13 @@
 //! Price prediction implementation using Kalman Filter for the DEX-OS core engine
 //!
-//! This module implements the Priority 2 feature from DEX-OS-V1.csv:
-//! "Core Trading,Oracle,Oracle,Kalman Filter,Price Prediction,Medium"
+//! This module implements multiple features from DEX-OS-V1.csv:
+//! - Priority 2 feature: "Core Trading,Oracle,Oracle,Kalman Filter,Price Prediction,Medium"
+//! - Priority 1 features: 
+//!   "Core Trading,Oracle,Oracle,Median Selection,Price Aggregation,High"
+//!   "Core Trading,Oracle,Oracle,TWAP Calculation,Price Aggregation,High"
 //!
 //! It provides functionality for predicting future prices using a Kalman filter,
-//! which is particularly useful for oracle price prediction in DeFi applications.
+//! as well as median-based and TWAP price aggregation for oracle price feeds.
 
 use crate::types::TokenId;
 use thiserror::Error;
@@ -214,6 +217,168 @@ pub enum PricePredictionError {
     InvalidTimestamp,
 }
 
+/// Calculate the median value from a vector of prices
+/// This implements the Priority 1 feature from DEX-OS-V1.csv:
+/// "Core Trading,Oracle,Oracle,Median Selection,Price Aggregation,High"
+fn calculate_median(prices: &mut Vec<f64>) -> f64 {
+    if prices.is_empty() {
+        return 0.0;
+    }
+    
+    // Sort the prices
+    prices.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    
+    let len = prices.len();
+    if len % 2 == 0 {
+        // Even number of elements - average of two middle elements
+        (prices[len / 2 - 1] + prices[len / 2]) / 2.0
+    } else {
+        // Odd number of elements - middle element
+        prices[len / 2]
+    }
+}
+
+/// Calculate Time-Weighted Average Price (TWAP) from a series of price observations
+/// This implements the Priority 1 feature from DEX-OS-V1.csv:
+/// "Core Trading,Oracle,Oracle,TWAP Calculation,Price Aggregation,High"
+fn calculate_twap(observations: &[(f64, u64)]) -> f64 {
+    if observations.is_empty() {
+        return 0.0;
+    }
+    
+    if observations.len() == 1 {
+        return observations[0].0;
+    }
+    
+    let mut weighted_sum = 0.0;
+    let mut total_time = 0.0;
+    
+    // Calculate weighted average based on time intervals
+    for i in 1..observations.len() {
+        let (price, timestamp) = observations[i];
+        let (_, prev_timestamp) = observations[i - 1];
+        
+        // Time interval between observations
+        let time_interval = (timestamp - prev_timestamp) as f64;
+        
+        // Weight price by time interval
+        weighted_sum += price * time_interval;
+        total_time += time_interval;
+    }
+    
+    if total_time > 0.0 {
+        weighted_sum / total_time
+    } else {
+        observations[0].0
+    }
+}
+
+/// Oracle price aggregator that provides multiple aggregation methods
+#[derive(Debug, Clone)]
+pub struct PriceAggregator {
+    /// Price observations for different sources
+    observations: std::collections::HashMap<String, Vec<(f64, u64)>>,
+}
+
+impl PriceAggregator {
+    /// Create a new price aggregator
+    pub fn new() -> Self {
+        Self {
+            observations: std::collections::HashMap::new(),
+        }
+    }
+    
+    /// Add a price observation from a source
+    pub fn add_observation(&mut self, source: String, price: f64, timestamp: u64) {
+        self.observations
+            .entry(source)
+            .or_insert_with(Vec::new)
+            .push((price, timestamp));
+    }
+    
+    /// Get median price across all sources
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Oracle,Oracle,Median Selection,Price Aggregation,High"
+    pub fn get_median_price(&self) -> f64 {
+        let mut prices: Vec<f64> = self.observations
+            .values()
+            .flat_map(|obs| obs.last().map(|(price, _)| *price))
+            .collect();
+        
+        calculate_median(&mut prices)
+    }
+    
+    /// Get Time-Weighted Average Price (TWAP) for a specific source
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Oracle,Oracle,TWAP Calculation,Price Aggregation,High"
+    pub fn get_twap_price(&self, source: &str, time_window: u64) -> f64 {
+        if let Some(observations) = self.observations.get(source) {
+            if observations.is_empty() {
+                return 0.0;
+            }
+            
+            // Get current timestamp (use the latest observation timestamp)
+            let current_time = observations.last().map(|(_, ts)| *ts).unwrap_or(0);
+            
+            // Filter observations within the time window
+            let window_observations: Vec<(f64, u64)> = observations
+                .iter()
+                .filter(|(_, ts)| *ts >= current_time.saturating_sub(time_window))
+                .cloned()
+                .collect();
+            
+            calculate_twap(&window_observations)
+        } else {
+            0.0
+        }
+    }
+    
+    /// Get Time-Weighted Average Price (TWAP) across all sources
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,Oracle,Oracle,TWAP Calculation,Price Aggregation,High"
+    pub fn get_aggregated_twap_price(&self, time_window: u64) -> f64 {
+        // For aggregated TWAP, we'll calculate TWAP for each source and then take the average
+        let mut source_twaps = Vec::new();
+        
+        for source in self.observations.keys() {
+            let twap = self.get_twap_price(source, time_window);
+            if twap > 0.0 {
+                source_twaps.push(twap);
+            }
+        }
+        
+        if source_twaps.is_empty() {
+            0.0
+        } else {
+            source_twaps.iter().sum::<f64>() / source_twaps.len() as f64
+        }
+    }
+    
+    /// Remove old observations to prevent unbounded memory growth
+    pub fn prune_observations(&mut self, max_age: u64) {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+            
+        let cutoff_time = current_time.saturating_sub(max_age);
+        
+        for observations in self.observations.values_mut() {
+            observations.retain(|(_, timestamp)| *timestamp >= cutoff_time);
+        }
+    }
+    
+    /// Get the number of sources
+    pub fn source_count(&self) -> usize {
+        self.observations.len()
+    }
+    
+    /// Get the total number of observations
+    pub fn observation_count(&self) -> usize {
+        self.observations.values().map(|v| v.len()).sum()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +496,73 @@ mod tests {
 
         // With higher noise, uncertainty should be higher
         assert!(variance_after > variance_before);
+    }
+    
+    #[test]
+    fn test_median_calculation() {
+        let mut prices = vec![100.0, 105.0, 95.0, 110.0, 90.0];
+        let median = calculate_median(&mut prices);
+        assert_eq!(median, 100.0);
+        
+        // Test with even number of elements
+        let mut prices_even = vec![100.0, 105.0, 95.0, 110.0];
+        let median_even = calculate_median(&mut prices_even);
+        assert_eq!(median_even, 102.5);
+    }
+    
+    #[test]
+    fn test_twap_calculation() {
+        // Test with simple observations
+        let observations = vec![
+            (100.0, 0),
+            (105.0, 1000),
+            (110.0, 2000),
+        ];
+        
+        let twap = calculate_twap(&observations);
+        // Expected: (100*1000 + 105*1000) / 2000 = 102.5
+        assert_eq!(twap, 102.5);
+    }
+    
+    #[test]
+    fn test_price_aggregator() {
+        let mut aggregator = PriceAggregator::new();
+        
+        // Add observations from different sources
+        aggregator.add_observation("source1".to_string(), 100.0, 1000);
+        aggregator.add_observation("source2".to_string(), 105.0, 1000);
+        aggregator.add_observation("source3".to_string(), 95.0, 1000);
+        
+        // Test median calculation
+        let median_price = aggregator.get_median_price();
+        assert_eq!(median_price, 100.0);
+        
+        // Add more observations for TWAP
+        aggregator.add_observation("source1".to_string(), 102.0, 2000);
+        aggregator.add_observation("source2".to_string(), 107.0, 2000);
+        aggregator.add_observation("source3".to_string(), 97.0, 2000);
+        
+        // Test TWAP calculation
+        let twap_price = aggregator.get_twap_price("source1", 3000);
+        // Expected: (100*1000 + 102*1000) / 2000 = 101.0
+        assert_eq!(twap_price, 101.0);
+    }
+    
+    #[test]
+    fn test_aggregated_twap() {
+        let mut aggregator = PriceAggregator::new();
+        
+        // Add observations from different sources
+        aggregator.add_observation("source1".to_string(), 100.0, 1000);
+        aggregator.add_observation("source2".to_string(), 105.0, 1000);
+        aggregator.add_observation("source1".to_string(), 102.0, 2000);
+        aggregator.add_observation("source2".to_string(), 107.0, 2000);
+        
+        // Test aggregated TWAP
+        let aggregated_twap = aggregator.get_aggregated_twap_price(3000);
+        // source1 TWAP: (100*1000 + 102*1000) / 2000 = 101.0
+        // source2 TWAP: (105*1000 + 107*1000) / 2000 = 106.0
+        // Aggregated: (101.0 + 106.0) / 2 = 103.5
+        assert_eq!(aggregated_twap, 103.5);
     }
 }

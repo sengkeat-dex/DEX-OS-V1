@@ -45,6 +45,18 @@ This document summarizes the implementation of Priority 1 DEX Aggregator feature
   - Supports selection of optimal routes when multiple paths are available
   - Integrated with existing pathfinding functionality for seamless operation
 
+### 4. Dijkstra's Algorithm (variant) for Route Optimization
+
+- **Module**: `dex-core/src/path_routing.rs`
+- **Algorithm**: Dijkstra's Algorithm (variant)
+- **Feature Reference**: "Core Trading,DEX Aggregator,DEX Aggregator,Dijkstra's Algorithm (variant),Route Optimization,High"
+- **Implementation Details**:
+  - Implemented variant of Dijkstra's algorithm for route optimization
+  - Optimized for finding best multi-hop trading routes
+  - Considers liquidity depth and fees in path selection
+  - Uses min-heap for efficient node selection
+  - Provides optimized pathfinding compared to Bellman-Ford for graphs without negative weights
+
 ## Security Considerations
 
 All implementations follow the security guidelines specified in:
@@ -69,6 +81,7 @@ The implementation includes comprehensive unit tests that cover:
 - Error condition testing
 - Performance improvements from caching
 - Max-Heap based route selection functionality
+- Dijkstra's algorithm variant for route optimization
 - Integration between different DEX Aggregator components
 
 ## Compliance with DEX-OS-V1.csv
@@ -77,6 +90,7 @@ These implementations directly correspond to Priority 1 entries in the DEX-OS-V1
 - "Core Trading,DEX Aggregator,DEX Aggregator,Graph,DEX Liquidity Network,High"
 - "Core Trading,DEX Aggregator,DEX Aggregator,Hash Map,Route Caching,High"
 - "Core Trading,DEX Aggregator,DEX Aggregator,Max-Heap (implicit),Best Route Selection,High"
+- "Core Trading,DEX Aggregator,DEX Aggregator,Dijkstra's Algorithm (variant),Route Optimization,High"
 
 This ensures compliance with the project's architectural decisions and requirements as specified in the development guidelines.
 
@@ -94,6 +108,7 @@ These implementations provide a solid foundation for the Priority 1 DEX Aggregat
 - Performance optimizations for large-scale liquidity networks
 - Advanced caching strategies with expiration policies
 - Enhanced heap-based selection with additional criteria beyond exchange rate
+- Advanced Dijkstra's algorithm optimizations for specific use cases
 - Integration with other components of the DEX-OS system
 - Extended testing with property-based and integration tests
 - Monitoring and metrics for cache performance analysis

@@ -11,6 +11,7 @@ pub mod orderbook;
 pub mod partial_fill;
 pub mod path_routing;
 pub mod price_prediction;
+pub mod quantum_consensus;
 pub mod reward_distribution;
 pub mod stableswap;
 pub mod trade_prevention;

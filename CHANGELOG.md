@@ -1,6 +1,32 @@
 # DEX-OS Change Log
 
-# [0.3.3] - 2025-11-05
+# [0.3.4] - 2025-11-07
+
+### Added
+- Implementation of Priority 1 Quantum Consensus features from DEX-OS-V1.csv:
+  * Rust + GPU + Quantum Consensus for Quantum-Resistant Consensus (`dex-core/src/quantum_consensus.rs`)
+  * QVRF Leader Selection for Leader Selection (`dex-core/src/quantum_consensus.rs`)
+  * Lattice BFT Core for BFT Core (`dex-core/src/quantum_consensus.rs`)
+- Quantum Consensus Engine with validator management and block processing
+- QVRF (Quantum Verifiable Random Function) implementation for leader selection
+- Lattice BFT Core implementation for Byzantine Fault Tolerance
+- Comprehensive unit tests for all quantum consensus functionality
+- Security analysis document for quantum consensus implementation
+- Testing plan document for quantum consensus implementation
+- Integration tests for quantum consensus workflow
+
+### Changed
+- Extended core engine library with quantum consensus module
+- Updated DEX-OS-V1.csv to mark Rust + GPU + Quantum Consensus, QVRF Leader Selection, and Lattice BFT Core as implemented
+- Enhanced types module with Block, Transaction, and Validator structures
+
+### Security
+- Implemented protection layers 1-5 for quantum consensus as defined in RULES.md
+- Added input validation for all consensus operations
+- Added proper error handling and propagation
+- Created security analysis document following OWASP and LLM-OWASP guidelines
+
+## [0.3.3] - 2025-11-05
 
 ### Added
 - Token issuance surface that covers three flows:
@@ -14,16 +40,23 @@
   * Graph for DEX Liquidity Network (`dex-core/src/path_routing.rs`)
   * Hash Map for Route Caching (`dex-core/src/path_routing.rs`)
   * Max-Heap (implicit) for Best Route Selection (`dex-core/src/path_routing.rs`)
+  * Dijkstra's Algorithm (variant) for Route Optimization (`dex-core/src/path_routing.rs`)
+- Implementation of Priority 1 Oracle features from DEX-OS-V1.csv:
+  * Median Selection for Price Aggregation (`dex-core/src/price_prediction.rs`)
+  * TWAP Calculation for Price Aggregation (`dex-core/src/price_prediction.rs`)
 - Enhanced path routing implementation with DEX liquidity network graph representation
 - Route caching mechanism using Hash Map for improved performance
 - Max-Heap based best route selection for efficient path prioritization
-- Comprehensive tests for route caching and heap-based selection functionality
+- Dijkstra's algorithm variant for optimized route finding
+- Median-based price aggregation for oracle feeds
+- Time-Weighted Average Price (TWAP) calculation for oracle feeds
+- Comprehensive tests for all new functionality
 
 ### Changed
 - `AuthManager` can now sign tokens (encoding key + issuance helpers) while the UI persists issued tokens automatically.
 - Session panel in `dex-ui` was redesigned to surface token issuance tools alongside wallet/JWT fields.
 - Extended PathRouter struct with route caching capabilities
-- Updated DEX-OS-V1.csv to mark Graph DEX Liquidity Network, Hash Map Route Caching, and Max-Heap Best Route Selection as implemented
+- Updated DEX-OS-V1.csv to mark Graph DEX Liquidity Network, Hash Map Route Caching, Max-Heap Best Route Selection, Dijkstra's Algorithm Route Optimization, Median Selection Price Aggregation, and TWAP Calculation Price Aggregation as implemented
 
 ### Security
 - Wallet challenges are single-use, time-boxed, and verified with `personal_sign`/secp256k1 recovery to avoid replay.
