@@ -17,7 +17,7 @@ This document summarizes the implementation of all Priority 2 features as specif
   - For equal priorities, earlier timestamps are processed first
   - Provides functions to add claims, process next claim, and check pending claims
 
-#### 11.2 Balanced BST for AMM Fee Distribution
+#### 1.2 Balanced BST for AMM Fee Distribution
 - **Module**: `dex-core/src/fee_distribution.rs`
 - **Algorithm**: Balanced BST (BTreeMap)
 - **Feature Reference**: "Core Trading,AMM,AMM,Balanced BST,Fee Distribution,Medium"
@@ -111,6 +111,32 @@ This document summarizes the implementation of all Priority 2 features as specif
   - Requires multiple signatures before executing transactions
   - Supports deposit, transaction creation, signing, and execution
   - Created `MultiSigWalletManager` to manage multiple wallets
+
+### 5. Lending Features
+
+#### 5.1 Interest Rate Model with Compound-style Algorithm
+- **Module**: `dex-core/src/lending.rs`
+- **Algorithm**: Compound-style Interest Rate Model
+- **Feature Reference**: "Core Trading,Lending,Lending,Interest Rate Model,Compound-style Algorithm,High"
+- **Implementation Details**:
+  - Created `CompoundInterestRateModel` struct implementing the Compound Finance v2 interest rate model
+  - Implements dual-slope model with base rate, multiplier, kink utilization, and kink multiplier
+  - Calculates borrow rates based on utilization with proper bounds checking
+  - Calculates supply rates based on borrow rates and reserve factors
+  - Supports different asset types (Token, Stablecoin, NFT)
+
+#### 5.2 Accounting System for Loan Tracking
+- **Module**: `dex-core/src/lending.rs`
+- **Algorithm**: Loan Accounting System
+- **Feature Reference**: "Core Trading,Lending,Lending,Accounting System,Loan Tracking,High"
+- **Implementation Details**:
+  - Created `Loan` struct to represent loan positions with all relevant details
+  - Implemented `LoanAccountingSystem` for comprehensive loan tracking
+  - Supports loan creation with borrower validation and liquidity checks
+  - Implements loan repayment with partial and full payment handling
+  - Provides loan liquidation for undercollateralized positions
+  - Tracks protocol utilization rates for interest rate calculations
+  - Manages liquidity supply and withdrawal operations
 
 ## Security Considerations
 

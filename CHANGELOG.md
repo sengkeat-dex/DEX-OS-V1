@@ -1,5 +1,27 @@
 # DEX-OS Change Log
 
+# [0.3.5] - 2025-11-07
+
+### Added
+- Implementation of Priority 2 Lending features from DEX-OS-V1.csv:
+  * Interest Rate Model with Compound-style Algorithm (`dex-core/src/lending.rs`)
+  * Accounting System for Loan Tracking (`dex-core/src/lending.rs`)
+- Complete lending module with Compound-style interest rate model implementation
+- Loan accounting system with comprehensive tracking capabilities
+- Asset type support for tokens, stablecoins, and NFTs
+- Interest calculation and accrual mechanisms
+- Loan lifecycle management (creation, repayment, liquidation)
+- Comprehensive unit tests for all lending functionality
+
+### Changed
+- Extended core engine library with lending module
+- Updated DEX-OS-V1.csv to mark Interest Rate Model Compound-style Algorithm and Accounting System Loan Tracking as implemented
+
+### Security
+- Proper error handling and input validation in lending module
+- Memory safety through Rust's ownership system
+- Implementation follows security guidelines from RULES.md
+
 # [0.3.4] - 2025-11-07
 
 ### Added

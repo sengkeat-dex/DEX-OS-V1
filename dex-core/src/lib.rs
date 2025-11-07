@@ -5,6 +5,7 @@ pub mod avl_tree;
 pub mod cross_chain_asset_mapping;
 pub mod fee_distribution;
 pub mod fee_management;
+pub mod lending;
 pub mod merkle_tree;
 pub mod multisig_wallet;
 pub mod orderbook;
