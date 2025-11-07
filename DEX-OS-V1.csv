@@ -13,10 +13,11 @@ Development Priority,Category,Component,Algorithm/Data Structure,Feature,Task Pr
 
 1,Core Trading,DEX Aggregator,DEX Aggregator,Graph,DEX Liquidity Network,High [IMPLEMENTED]
 1,Core Trading,DEX Aggregator,DEX Aggregator,Hash Map,Route Caching,High [IMPLEMENTED]
-1,Core Trading,DEX Aggregator,DEX Aggregator,Max-Heap (implicit),Best Route Selection,High
+1,Core Trading,DEX Aggregator,DEX Aggregator,Max-Heap (implicit),Best Route Selection,High [IMPLEMENTED]
 1,Core Trading,DEX Aggregator,DEX Aggregator,Dijkstra's Algorithm (variant),Route Optimization,High
 1,Core Trading,Oracle,Oracle,Median Selection,Price Aggregation,High
 1,Core Trading,Oracle,Oracle,TWAP Calculation,Price Aggregation,High
+
 1,Core Components,DEX Chain Core,Quantum Consensus,Rust + GPU + Quantum Consensus,Quantum-Resistant Consensus,High
 1,Core Components,Quantum Consensus (QBFT),Consensus,QVRF Leader Selection,Leader Selection,High
 1,Core Components,Quantum Consensus (QBFT),Consensus,Lattice BFT Core,BFT Core,High

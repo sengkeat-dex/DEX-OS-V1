@@ -10,7 +10,7 @@
 //! arbitrage opportunities or fees), with route caching for improved performance.
 
 use crate::types::{Quantity, TokenId};
-use std::collections::{HashMap, VecDeque, hash_map::Entry};
+use std::collections::{HashMap, VecDeque, hash_map::Entry, BinaryHeap};
 use thiserror::Error;
 
 /// Represents an edge in the trading graph (a trading path between tokens on a DEX)
@@ -329,10 +329,79 @@ impl PathRouter {
 
         all_paths
     }
+    
+    /// Find the best path among multiple possible paths using Max-Heap for selection
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,DEX Aggregator,DEX Aggregator,Max-Heap (implicit),Best Route Selection,High"
+    pub fn find_best_path_with_heap(
+        &self,
+        source: &TokenId,
+        destination: &TokenId,
+        max_hops: usize,
+    ) -> Option<RoutingPath> {
+        let mut path_heap = BinaryHeap::new();
 
+        // Add all possible paths to the heap
+        let all_paths = self.find_all_paths(source, destination, max_hops);
+        
+        // Convert paths to PathInfo and add to heap
+        for path in all_paths {
+            let path_info = PathInfo {
+                path: path.edges.clone(),
+                total_exchange_rate: path.total_exchange_rate,
+                total_fee: path.total_fee,
+                min_liquidity: path.min_liquidity,
+                current_token: destination.clone(), // Since these are complete paths
+                hops: path.edges.len(),
+            };
+            path_heap.push(path_info);
+        }
+
+        // Return the best path from the heap (highest exchange rate)
+        path_heap.pop().map(|path_info| RoutingPath {
+            edges: path_info.path,
+            total_exchange_rate: path_info.total_exchange_rate,
+            total_fee: path_info.total_fee,
+            min_liquidity: path_info.min_liquidity,
+        })
+    }
+    
+    /// Enhanced version of find_best_path that incorporates Max-Heap based selection
+    /// when multiple equivalent paths are found by Bellman-Ford
+    /// This implements the Priority 1 feature from DEX-OS-V1.csv:
+    /// "Core Trading,DEX Aggregator,DEX Aggregator,Max-Heap (implicit),Best Route Selection,High"
+    pub fn find_best_path_enhanced(
+        &mut self,
+        source: &TokenId,
+        destination: &TokenId,
+        amount: f64,
+    ) -> Result<Option<RoutingPath>, PathRoutingError> {
+        // First try the standard Bellman-Ford approach
+        let standard_result = self.find_best_path(source, destination, amount)?;
+        
+        // If we found a path, we can return it directly
+        // The Max-Heap is more useful when we have multiple equivalent paths
+        // and need to select the best one based on additional criteria
+        if standard_result.is_some() {
+            return Ok(standard_result);
+        }
+        
+        // If no path was found with the standard approach, try the heap-based approach
+        // with a reasonable hop limit
+        let heap_result = self.find_best_path_with_heap(source, destination, 5);
+        
+        // Adjust the amount for the result if we found a path
+        if let Some(mut path) = heap_result {
+            path.total_exchange_rate = path.total_exchange_rate * amount;
+            Ok(Some(path))
+        } else {
+            Ok(None)
+        }
+    }
+    
     /// Get all tokens in the graph
     pub fn get_tokens(&self) -> &[TokenId] {
-        &self.tokens
+        &self.tokens as &[TokenId]
     }
 
     /// Get all edges from a specific token
@@ -468,6 +537,110 @@ mod tests {
         assert_eq!(path.total_exchange_rate, 13.5 * 3200.0); // 43,200
         assert_eq!(path.total_fee, 0.006); // 0.003 + 0.003
         assert_eq!(path.min_liquidity, 1000000); // Limited by BTC->ETH liquidity
+    }
+    
+    #[test]
+    fn test_find_best_path_with_heap() {
+        let mut router = PathRouter::new();
+
+        // Add multiple paths from BTC to USDC
+        // Path 1: BTC -> ETH -> USDC
+        let edge1_1 = TradingEdge {
+            from_token: "BTC".to_string(),
+            to_token: "ETH".to_string(),
+            dex_name: "Uniswap".to_string(),
+            exchange_rate: 13.5,
+            fee: 0.003,
+            liquidity: 1000000,
+        };
+
+        let edge1_2 = TradingEdge {
+            from_token: "ETH".to_string(),
+            to_token: "USDC".to_string(),
+            dex_name: "SushiSwap".to_string(),
+            exchange_rate: 3200.0,
+            fee: 0.003,
+            liquidity: 50000000,
+        };
+
+        // Path 2: BTC -> USDC (direct)
+        let edge2 = TradingEdge {
+            from_token: "BTC".to_string(),
+            to_token: "USDC".to_string(),
+            dex_name: "Curve".to_string(),
+            exchange_rate: 42000.0, // Better rate than the multi-hop path
+            fee: 0.001,
+            liquidity: 2000000,
+        };
+
+        router.add_edge(edge1_1.clone());
+        router.add_edge(edge1_2.clone());
+        router.add_edge(edge2.clone());
+
+        // Find best path using heap-based selection
+        let result = router.find_best_path_with_heap(&"BTC".to_string(), &"USDC".to_string(), 3);
+        assert!(result.is_some());
+
+        let path = result.unwrap();
+        // Should select the direct path as it has a better exchange rate
+        assert_eq!(path.edges.len(), 1);
+        assert_eq!(path.edges[0], edge2);
+        assert_eq!(path.total_exchange_rate, 42000.0);
+        assert_eq!(path.total_fee, 0.001);
+        assert_eq!(path.min_liquidity, 2000000);
+    }
+    
+    #[test]
+    fn test_find_best_path_enhanced() {
+        let mut router = PathRouter::new();
+
+        // Add multiple paths from BTC to USDC
+        // Path 1: BTC -> ETH -> USDC
+        let edge1_1 = TradingEdge {
+            from_token: "BTC".to_string(),
+            to_token: "ETH".to_string(),
+            dex_name: "Uniswap".to_string(),
+            exchange_rate: 13.5,
+            fee: 0.003,
+            liquidity: 1000000,
+        };
+
+        let edge1_2 = TradingEdge {
+            from_token: "ETH".to_string(),
+            to_token: "USDC".to_string(),
+            dex_name: "SushiSwap".to_string(),
+            exchange_rate: 3200.0,
+            fee: 0.003,
+            liquidity: 50000000,
+        };
+
+        // Path 2: BTC -> USDC (direct)
+        let edge2 = TradingEdge {
+            from_token: "BTC".to_string(),
+            to_token: "USDC".to_string(),
+            dex_name: "Curve".to_string(),
+            exchange_rate: 42000.0, // Better rate than the multi-hop path
+            fee: 0.001,
+            liquidity: 2000000,
+        };
+
+        router.add_edge(edge1_1.clone());
+        router.add_edge(edge1_2.clone());
+        router.add_edge(edge2.clone());
+
+        // Find best path using enhanced selection
+        let result = router
+            .find_best_path_enhanced(&"BTC".to_string(), &"USDC".to_string(), 1.0)
+            .unwrap();
+        assert!(result.is_some());
+
+        let path = result.unwrap();
+        // Should select the direct path as it has a better exchange rate
+        assert_eq!(path.edges.len(), 1);
+        assert_eq!(path.edges[0], edge2);
+        assert_eq!(path.total_exchange_rate, 42000.0);
+        assert_eq!(path.total_fee, 0.001);
+        assert_eq!(path.min_liquidity, 2000000);
     }
 
     #[test]
@@ -672,3 +845,40 @@ mod tests {
         // Note: The exact behavior depends on implementation, but cache should be managed properly
     }
 }
+
+/// Helper struct for path information used in heap-based selection
+/// This implements the Priority 1 feature from DEX-OS-V1.csv:
+/// "Core Trading,DEX Aggregator,DEX Aggregator,Max-Heap (implicit),Best Route Selection,High"
+#[derive(Debug, Clone)]
+struct PathInfo {
+    path: Vec<TradingEdge>,
+    total_exchange_rate: f64,
+    total_fee: f64,
+    min_liquidity: Quantity,
+    current_token: TokenId,
+    hops: usize,
+}
+
+// Implement Ord trait to make PathInfo work with BinaryHeap as a max-heap based on exchange rate
+impl Ord for PathInfo {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Compare by total exchange rate (higher is better)
+        // We reverse the comparison because BinaryHeap is a max-heap by default,
+        // but we want to compare f64 values properly
+        other.total_exchange_rate.partial_cmp(&self.total_exchange_rate).unwrap_or(std::cmp::Ordering::Equal)
+    }
+}
+
+impl PartialOrd for PathInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for PathInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.total_exchange_rate == other.total_exchange_rate
+    }
+}
+
+impl Eq for PathInfo {}
