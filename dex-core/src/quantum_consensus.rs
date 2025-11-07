@@ -32,6 +32,68 @@ pub struct QuantumConsensusEngine {
     validators: HashMap<String, Validator>,
     current_round: u64,
     current_leader: Option<String>,
+    /// Shards for the 1,000,000 Shards implementation
+    /// This implements the Priority 2 feature from DEX-OS-V1.csv:
+    /// "2,Core Components,Quantum Consensus (QBFT),Consensus,1,000,000 Shards,Sharding,High"
+    shards: HashMap<u64, Shard>,
+    /// Global finality tracker
+    /// This implements the Priority 2 feature from DEX-OS-V1.csv:
+    /// "2,Core Components,Quantum Consensus (QBFT),Consensus,Global Finality,Finality,High"
+    finality_tracker: GlobalFinalityTracker,
+}
+
+/// Represents a shard in the sharded consensus system
+#[derive(Debug, Clone)]
+pub struct Shard {
+    pub id: u64,
+    pub validators: Vec<String>,
+    pub blocks: Vec<Block>,
+    pub state_root: Vec<u8>,
+}
+
+/// Tracks global finality across all shards
+#[derive(Debug, Clone)]
+pub struct GlobalFinalityTracker {
+    /// Maps shard IDs to their finalized block heights
+    finalized_heights: HashMap<u64, u64>,
+    /// The globally finalized block height (minimum of all shard finalities)
+    global_finalized_height: u64,
+}
+
+impl GlobalFinalityTracker {
+    /// Create a new global finality tracker
+    pub fn new() -> Self {
+        Self {
+            finalized_heights: HashMap::new(),
+            global_finalized_height: 0,
+        }
+    }
+    
+    /// Update the finalized height for a shard
+    pub fn update_shard_finality(&mut self, shard_id: u64, height: u64) {
+        self.finalized_heights.insert(shard_id, height);
+        self.update_global_finality();
+    }
+    
+    /// Update the global finality based on all shard finalities
+    fn update_global_finality(&mut self) {
+        if self.finalized_heights.is_empty() {
+            self.global_finalized_height = 0;
+        } else {
+            // Global finality is the minimum finalized height across all shards
+            self.global_finalized_height = *self.finalized_heights.values().min().unwrap_or(&0);
+        }
+    }
+    
+    /// Get the globally finalized block height
+    pub fn get_global_finalized_height(&self) -> u64 {
+        self.global_finalized_height
+    }
+    
+    /// Get the finalized height for a specific shard
+    pub fn get_shard_finalized_height(&self, shard_id: u64) -> Option<u64> {
+        self.finalized_heights.get(&shard_id).copied()
+    }
 }
 
 impl QuantumConsensusEngine {
@@ -41,6 +103,8 @@ impl QuantumConsensusEngine {
             validators: HashMap::new(),
             current_round: 0,
             current_leader: None,
+            shards: HashMap::new(),
+            finality_tracker: GlobalFinalityTracker::new(),
         }
     }
 
@@ -117,16 +181,99 @@ impl QuantumConsensusEngine {
         Ok(true)
     }
 
-    /// Process a block using the quantum consensus algorithm
-    pub fn process_block(&mut self, block: Block) -> Result<Block, QuantumConsensusError> {
+    /// Initialize 1,000,000 shards
+    /// This implements the Priority 2 feature from DEX-OS-V1.csv:
+    /// "2,Core Components,Quantum Consensus (QBFT),Consensus,1,000,000 Shards,Sharding,High"
+    pub fn initialize_shards(&mut self, num_shards: u64) -> Result<(), QuantumConsensusError> {
+        if num_shards == 0 || num_shards > 1_000_000 {
+            return Err(QuantumConsensusError::NetworkError("Invalid number of shards".to_string()));
+        }
+        
+        // Distribute validators across shards
+        let validator_ids: Vec<String> = self.validators.keys().cloned().collect();
+        if validator_ids.is_empty() {
+            return Err(QuantumConsensusError::NetworkError("No validators available".to_string()));
+        }
+        
+        for shard_id in 0..num_shards {
+            // Assign validators to this shard (simple round-robin distribution)
+            let mut shard_validators = Vec::new();
+            for i in 0..3.min(validator_ids.len()) {
+                let validator_index = (shard_id as usize + i) % validator_ids.len();
+                shard_validators.push(validator_ids[validator_index].clone());
+            }
+            
+            let shard = Shard {
+                id: shard_id,
+                validators: shard_validators,
+                blocks: Vec::new(),
+                state_root: vec![0; 32], // Placeholder state root
+            };
+            
+            self.shards.insert(shard_id, shard);
+        }
+        
+        Ok(())
+    }
+    
+    /// Get a shard by ID
+    pub fn get_shard(&self, shard_id: u64) -> Option<&Shard> {
+        self.shards.get(&shard_id)
+    }
+    
+    /// Get all shards
+    pub fn get_shards(&self) -> &HashMap<u64, Shard> {
+        &self.shards
+    }
+    
+    /// Add a block to a specific shard
+    pub fn add_block_to_shard(&mut self, shard_id: u64, block: Block) -> Result<(), QuantumConsensusError> {
+        let shard = self.shards.get_mut(&shard_id)
+            .ok_or_else(|| QuantumConsensusError::NetworkError("Shard not found".to_string()))?;
+        
+        shard.blocks.push(block);
+        Ok(())
+    }
+    
+    /// Update the finality for a shard
+    /// This contributes to the Global Finality implementation from DEX-OS-V1.csv:
+    /// "2,Core Components,Quantum Consensus (QBFT),Consensus,Global Finality,Finality,High"
+    pub fn update_shard_finality(&mut self, shard_id: u64, height: u64) {
+        self.finality_tracker.update_shard_finality(shard_id, height);
+    }
+    
+    /// Get the global finalized height
+    /// This implements part of the Global Finality feature from DEX-OS-V1.csv:
+    /// "2,Core Components,Quantum Consensus (QBFT),Consensus,Global Finality,Finality,High"
+    pub fn get_global_finalized_height(&self) -> u64 {
+        self.finality_tracker.get_global_finalized_height()
+    }
+    
+    /// Get the finalized height for a specific shard
+    /// This implements part of the Global Finality feature from DEX-OS-V1.csv:
+    /// "2,Core Components,Quantum Consensus (QBFT),Consensus,Global Finality,Finality,High"
+    pub fn get_shard_finalized_height(&self, shard_id: u64) -> Option<u64> {
+        self.finality_tracker.get_shard_finalized_height(shard_id)
+    }
+    
+    /// Process a block using the quantum consensus algorithm with sharding support
+    pub fn process_block_with_sharding(&mut self, shard_id: u64, block: Block) -> Result<Block, QuantumConsensusError> {
         self.current_round += 1;
+        
+        // Validate that the shard exists
+        if !self.shards.contains_key(&shard_id) {
+            return Err(QuantumConsensusError::NetworkError("Shard not found".to_string()));
+        }
         
         // Validate the block
         let leader = self.get_current_leader()?;
         if !self.validate_block_proposal(&block, &leader)? {
             return Err(QuantumConsensusError::BlockProposalFailed);
         }
-
+        
+        // Add block to the shard
+        self.add_block_to_shard(shard_id, block.clone())?;
+        
         // In a real implementation, we would add lattice-based consensus here
         Ok(block)
     }
@@ -402,5 +549,176 @@ mod tests {
         // Test sufficient signatures
         assert!(lattice_core.has_sufficient_signatures(2));
         assert!(!lattice_core.has_sufficient_signatures(1));
+    }
+    
+    #[test]
+    fn test_global_finality_tracker() {
+        let mut tracker = GlobalFinalityTracker::new();
+        
+        // Initially should be 0
+        assert_eq!(tracker.get_global_finalized_height(), 0);
+        
+        // Update shard finalities
+        tracker.update_shard_finality(1, 100);
+        tracker.update_shard_finality(2, 90);
+        tracker.update_shard_finality(3, 95);
+        
+        // Global finality should be the minimum (90)
+        assert_eq!(tracker.get_global_finalized_height(), 90);
+        
+        // Update one shard to have a lower finality
+        tracker.update_shard_finality(2, 85);
+        assert_eq!(tracker.get_global_finalized_height(), 85);
+        
+        // Check individual shard finalities
+        assert_eq!(tracker.get_shard_finalized_height(1), Some(100));
+        assert_eq!(tracker.get_shard_finalized_height(2), Some(85));
+        assert_eq!(tracker.get_shard_finalized_height(4), None); // Non-existent shard
+    }
+    
+    #[test]
+    fn test_initialize_shards() {
+        let mut engine = QuantumConsensusEngine::new();
+        
+        // Add validators
+        let validator1 = Validator {
+            id: "validator1".to_string(),
+            public_key: vec![1, 2, 3, 4],
+            stake: 1000,
+        };
+        
+        let validator2 = Validator {
+            id: "validator2".to_string(),
+            public_key: vec![5, 6, 7, 8],
+            stake: 1000,
+        };
+        
+        let validator3 = Validator {
+            id: "validator3".to_string(),
+            public_key: vec![9, 10, 11, 12],
+            stake: 1000,
+        };
+        
+        engine.add_validator(validator1).unwrap();
+        engine.add_validator(validator2).unwrap();
+        engine.add_validator(validator3).unwrap();
+        
+        // Initialize 5 shards
+        assert!(engine.initialize_shards(5).is_ok());
+        
+        // Check that shards were created
+        assert_eq!(engine.get_shards().len(), 5);
+        
+        // Check that each shard has validators
+        for shard_id in 0..5 {
+            let shard = engine.get_shard(shard_id).unwrap();
+            assert_eq!(shard.id, shard_id);
+            assert!(!shard.validators.is_empty());
+            assert_eq!(shard.blocks.len(), 0);
+        }
+    }
+    
+    #[test]
+    fn test_shard_block_processing() {
+        let mut engine = QuantumConsensusEngine::new();
+        
+        // Add a validator
+        let validator = Validator {
+            id: "validator1".to_string(),
+            public_key: vec![1, 2, 3, 4],
+            stake: 1000,
+        };
+        engine.add_validator(validator).unwrap();
+        
+        // Initialize shards
+        assert!(engine.initialize_shards(3).is_ok());
+        
+        // Create a block
+        let tx = Transaction {
+            from: "user1".to_string(),
+            to: "user2".to_string(),
+            amount: 100,
+            nonce: 1,
+            signature: vec![],
+        };
+        
+        let block = Block {
+            id: 1,
+            height: 1,
+            timestamp: 1234567890,
+            transactions: vec![tx],
+            previous_hash: vec![0; 32],
+            hash: vec![0; 32],
+            signature: vec![],
+        };
+        
+        // Process block for shard 1
+        assert!(engine.process_block_with_sharding(1, block).is_ok());
+        
+        // Check that block was added to shard
+        let shard = engine.get_shard(1).unwrap();
+        assert_eq!(shard.blocks.len(), 1);
+        assert_eq!(shard.blocks[0].id, 1);
+    }
+    
+    #[test]
+    fn test_shard_finality_updates() {
+        let mut engine = QuantumConsensusEngine::new();
+        
+        // Add a validator
+        let validator = Validator {
+            id: "validator1".to_string(),
+            public_key: vec![1, 2, 3, 4],
+            stake: 1000,
+        };
+        engine.add_validator(validator).unwrap();
+        
+        // Initialize shards
+        assert!(engine.initialize_shards(3).is_ok());
+        
+        // Initially global finality should be 0
+        assert_eq!(engine.get_global_finalized_height(), 0);
+        
+        // Update finality for shards
+        engine.update_shard_finality(0, 100);
+        engine.update_shard_finality(1, 90);
+        engine.update_shard_finality(2, 95);
+        
+        // Global finality should be the minimum (90)
+        assert_eq!(engine.get_global_finalized_height(), 90);
+        
+        // Check individual shard finalities
+        assert_eq!(engine.get_shard_finalized_height(0), Some(100));
+        assert_eq!(engine.get_shard_finalized_height(1), Some(90));
+        assert_eq!(engine.get_shard_finalized_height(2), Some(95));
+    }
+    
+    #[test]
+    fn test_invalid_shard_operations() {
+        let mut engine = QuantumConsensusEngine::new();
+        
+        // Add a validator
+        let validator = Validator {
+            id: "validator1".to_string(),
+            public_key: vec![1, 2, 3, 4],
+            stake: 1000,
+        };
+        engine.add_validator(validator).unwrap();
+        
+        // Initialize shards
+        assert!(engine.initialize_shards(3).is_ok());
+        
+        // Try to process block for non-existent shard
+        let block = Block {
+            id: 1,
+            height: 1,
+            timestamp: 1234567890,
+            transactions: vec![],
+            previous_hash: vec![0; 32],
+            hash: vec![0; 32],
+            signature: vec![],
+        };
+        
+        assert!(engine.process_block_with_sharding(999, block).is_err());
     }
 }

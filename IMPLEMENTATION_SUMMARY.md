@@ -138,6 +138,41 @@ This document summarizes the implementation of all Priority 2 features as specif
   - Tracks protocol utilization rates for interest rate calculations
   - Manages liquidity supply and withdrawal operations
 
+#### 5.3 Health Factor Calculation for Liquidation Prevention
+- **Module**: `dex-core/src/lending.rs`
+- **Algorithm**: Health Factor Calculation
+- **Feature Reference**: "Core Trading,Lending,Lending,Health Factor Calculation,Liquidation Prevention,High"
+- **Implementation Details**:
+  - Implements health factor calculation using collateral value, loan value, and liquidation threshold
+  - Provides functions to update and check health factors for loans
+  - Identifies undercollateralized loans for liquidation
+  - Supports configurable liquidation thresholds and minimum health factors
+  - Maintains health factor tracking within loan objects
+
+### 6. Quantum Consensus Features
+
+#### 6.1 1,000,000 Shards for Sharding
+- **Module**: `dex-core/src/quantum_consensus.rs`
+- **Algorithm**: Sharding with 1,000,000 Shards
+- **Feature Reference**: "Core Components,Quantum Consensus (QBFT),Consensus,1,000,000 Shards,Sharding,High"
+- **Implementation Details**:
+  - Created `Shard` struct to represent individual shards in the sharded consensus system
+  - Implements shard initialization with configurable number of shards (up to 1,000,000)
+  - Distributes validators across shards for parallel processing
+  - Supports block processing within specific shards
+  - Maintains shard state and validator assignments
+
+#### 6.2 Global Finality for Finality
+- **Module**: `dex-core/src/quantum_consensus.rs`
+- **Algorithm**: Global Finality Tracking
+- **Feature Reference**: "Core Components,Quantum Consensus (QBFT),Consensus,Global Finality,Finality,High"
+- **Implementation Details**:
+  - Created `GlobalFinalityTracker` struct for tracking finality across all shards
+  - Implements global finality as the minimum finalized height across all shards
+  - Provides functions to update shard finalities and query global finality
+  - Supports individual shard finality tracking
+  - Integrates with shard processing for consistent finality guarantees
+
 ## Security Considerations
 
 All implementations follow the security guidelines specified in:

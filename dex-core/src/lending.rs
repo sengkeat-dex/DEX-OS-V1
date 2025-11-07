@@ -407,6 +407,82 @@ impl LoanAccountingSystem {
     pub fn get_total_reserves(&self, asset: &AssetType) -> f64 {
         *self.total_reserves.get(asset).unwrap_or(&0.0)
     }
+
+    /// Calculate the health factor for a loan
+    /// 
+    /// Health factor = (Collateral Value * Liquidation Threshold) / Loan Value
+    /// This implements the Priority 2 feature from DEX-OS-V1.csv:
+    /// "2,Core Trading,Lending,Lending,Health Factor Calculation,Liquidation Prevention,High"
+    pub fn calculate_health_factor(&self, loan_id: &str, collateral_price: f64, loan_asset_price: f64, liquidation_threshold: f64) -> Result<f64, LendingError> {
+        let loan = self.loans.get(loan_id).ok_or(LendingError::LoanNotFound)?;
+        
+        if collateral_price <= 0.0 || loan_asset_price <= 0.0 || liquidation_threshold <= 0.0 || liquidation_threshold > 1.0 {
+            return Err(LendingError::InvalidAmount);
+        }
+        
+        if loan.status != LoanStatus::Active {
+            return Err(LendingError::LoanNotFound);
+        }
+        
+        let collateral_value = loan.collateral_amount * collateral_price;
+        let loan_value = loan.amount_owed * loan_asset_price;
+        
+        if loan_value == 0.0 {
+            return Ok(f64::INFINITY);
+        }
+        
+        let health_factor = (collateral_value * liquidation_threshold) / loan_value;
+        Ok(health_factor)
+    }
+    
+    /// Update the health factor for a loan
+    /// 
+    /// This function updates the health factor stored in the loan object
+    pub fn update_health_factor(&mut self, loan_id: &str, collateral_price: f64, loan_asset_price: f64, liquidation_threshold: f64) -> Result<(), LendingError> {
+        let health_factor = self.calculate_health_factor(loan_id, collateral_price, loan_asset_price, liquidation_threshold)?;
+        let loan = self.loans.get_mut(loan_id).ok_or(LendingError::LoanNotFound)?;
+        loan.health_factor = health_factor;
+        Ok(())
+    }
+    
+    /// Check if a loan should be liquidated based on health factor
+    /// 
+    /// Returns true if the health factor is below the liquidation threshold
+    pub fn should_liquidate(&self, loan_id: &str, collateral_price: f64, loan_asset_price: f64, liquidation_threshold: f64, min_health_factor: f64) -> Result<bool, LendingError> {
+        let health_factor = self.calculate_health_factor(loan_id, collateral_price, loan_asset_price, liquidation_threshold)?;
+        Ok(health_factor < min_health_factor)
+    }
+    
+    /// Get loans that are below the minimum health factor
+    /// 
+    /// Returns a vector of loan IDs that need to be liquidated
+    pub fn get_undercollateralized_loans(&self, collateral_prices: &HashMap<AssetType, f64>, loan_asset_prices: &HashMap<AssetType, f64>, liquidation_threshold: f64, min_health_factor: f64) -> Vec<String> {
+        let mut undercollateralized_loans = Vec::new();
+        
+        for (loan_id, loan) in &self.loans {
+            if loan.status != LoanStatus::Active {
+                continue;
+            }
+            
+            let collateral_price = match collateral_prices.get(&loan.collateral_asset) {
+                Some(price) => *price,
+                None => continue,
+            };
+            
+            let loan_asset_price = match loan_asset_prices.get(&loan.asset) {
+                Some(price) => *price,
+                None => continue,
+            };
+            
+            if let Ok(should_liquidate) = self.should_liquidate(loan_id, collateral_price, loan_asset_price, liquidation_threshold, min_health_factor) {
+                if should_liquidate {
+                    undercollateralized_loans.push(loan_id.clone());
+                }
+            }
+        }
+        
+        undercollateralized_loans
+    }
 }
 
 #[cfg(test)]
@@ -600,5 +676,183 @@ mod tests {
         // Try to repay non-existent loan
         let result = accounting.repay_loan("nonexistent", 50.0);
         assert_eq!(result, Err(LendingError::LoanNotFound));
+    }
+    
+    #[test]
+    fn test_health_factor_calculation() {
+        let interest_model = CompoundInterestRateModel::new(
+            0.02,
+            0.1,
+            1.0,
+            0.8,
+            0.5,
+        );
+        
+        let mut accounting = LoanAccountingSystem::new(interest_model, 0.1);
+        
+        // Supply assets
+        accounting.supply_assets(AssetType::Token("USDC".to_string()), 1000.0).unwrap();
+        
+        // Create a loan
+        accounting.create_loan(
+            "loan1".to_string(),
+            "borrower1".to_string(),
+            AssetType::Token("USDC".to_string()),
+            100.0,
+            AssetType::Token("ETH".to_string()),
+            0.5,
+            1000000,
+            10086400,
+        ).unwrap();
+        
+        // Calculate health factor
+        let health_factor = accounting.calculate_health_factor(
+            "loan1",
+            2000.0, // ETH price: $2000
+            1.0,    // USDC price: $1
+            0.8,    // 80% liquidation threshold
+        ).unwrap();
+        
+        // Expected: (0.5 * 2000 * 0.8) / (100 * 1) = 800 / 100 = 8.0
+        assert_eq!(health_factor, 8.0);
+    }
+    
+    #[test]
+    fn test_health_factor_update() {
+        let interest_model = CompoundInterestRateModel::new(
+            0.02,
+            0.1,
+            1.0,
+            0.8,
+            0.5,
+        );
+        
+        let mut accounting = LoanAccountingSystem::new(interest_model, 0.1);
+        
+        // Supply assets
+        accounting.supply_assets(AssetType::Token("USDC".to_string()), 1000.0).unwrap();
+        
+        // Create a loan
+        accounting.create_loan(
+            "loan1".to_string(),
+            "borrower1".to_string(),
+            AssetType::Token("USDC".to_string()),
+            100.0,
+            AssetType::Token("ETH".to_string()),
+            0.5,
+            1000000,
+            10086400,
+        ).unwrap();
+        
+        // Update health factor
+        accounting.update_health_factor(
+            "loan1",
+            2000.0, // ETH price: $2000
+            1.0,    // USDC price: $1
+            0.8,    // 80% liquidation threshold
+        ).unwrap();
+        
+        let loan = accounting.get_loan("loan1").unwrap();
+        assert_eq!(loan.health_factor, 8.0);
+    }
+    
+    #[test]
+    fn test_should_liquidate() {
+        let interest_model = CompoundInterestRateModel::new(
+            0.02,
+            0.1,
+            1.0,
+            0.8,
+            0.5,
+        );
+        
+        let mut accounting = LoanAccountingSystem::new(interest_model, 0.1);
+        
+        // Supply assets
+        accounting.supply_assets(AssetType::Token("USDC".to_string()), 1000.0).unwrap();
+        
+        // Create a loan
+        accounting.create_loan(
+            "loan1".to_string(),
+            "borrower1".to_string(),
+            AssetType::Token("USDC".to_string()),
+            100.0,
+            AssetType::Token("ETH".to_string()),
+            0.05, // Only 0.05 ETH as collateral
+            1000000,
+            10086400,
+        ).unwrap();
+        
+        // Check if should liquidate (health factor should be < 1.0)
+        let should_liquidate = accounting.should_liquidate(
+            "loan1",
+            2000.0, // ETH price: $2000
+            1.0,    // USDC price: $1
+            0.8,    // 80% liquidation threshold
+            1.0,    // Minimum health factor
+        ).unwrap();
+        
+        // Expected health factor: (0.05 * 2000 * 0.8) / (100 * 1) = 80 / 100 = 0.8
+        // Since 0.8 < 1.0, should liquidate
+        assert!(should_liquidate);
+    }
+    
+    #[test]
+    fn test_get_undercollateralized_loans() {
+        let interest_model = CompoundInterestRateModel::new(
+            0.02,
+            0.1,
+            1.0,
+            0.8,
+            0.5,
+        );
+        
+        let mut accounting = LoanAccountingSystem::new(interest_model, 0.1);
+        
+        // Supply assets
+        accounting.supply_assets(AssetType::Token("USDC".to_string()), 1000.0).unwrap();
+        accounting.supply_assets(AssetType::Token("DAI".to_string()), 1000.0).unwrap();
+        
+        // Create a healthy loan
+        accounting.create_loan(
+            "loan1".to_string(),
+            "borrower1".to_string(),
+            AssetType::Token("USDC".to_string()),
+            100.0,
+            AssetType::Token("ETH".to_string()),
+            0.5,
+            1000000,
+            10086400,
+        ).unwrap();
+        
+        // Create an undercollateralized loan
+        accounting.create_loan(
+            "loan2".to_string(),
+            "borrower2".to_string(),
+            AssetType::Token("DAI".to_string()),
+            500.0,
+            AssetType::Token("ETH".to_string()),
+            0.1,
+            1000000,
+            10086400,
+        ).unwrap();
+        
+        let mut collateral_prices = HashMap::new();
+        collateral_prices.insert(AssetType::Token("ETH".to_string()), 2000.0);
+        
+        let mut loan_asset_prices = HashMap::new();
+        loan_asset_prices.insert(AssetType::Token("USDC".to_string()), 1.0);
+        loan_asset_prices.insert(AssetType::Token("DAI".to_string()), 1.0);
+        
+        let undercollateralized = accounting.get_undercollateralized_loans(
+            &collateral_prices,
+            &loan_asset_prices,
+            0.8, // 80% liquidation threshold
+            1.0, // Minimum health factor
+        );
+        
+        // Only loan2 should be undercollateralized
+        assert_eq!(undercollateralized.len(), 1);
+        assert_eq!(undercollateralized[0], "loan2");
     }
 }

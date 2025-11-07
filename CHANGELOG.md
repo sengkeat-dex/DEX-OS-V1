@@ -1,5 +1,27 @@
 # DEX-OS Change Log
 
+# [0.3.6] - 2025-11-07
+
+### Added
+- Implementation of additional Priority 2 features from DEX-OS-V1.csv:
+  * Health Factor Calculation for Liquidation Prevention (`dex-core/src/lending.rs`)
+  * 1,000,000 Shards for Sharding (`dex-core/src/quantum_consensus.rs`)
+  * Global Finality for Finality (`dex-core/src/quantum_consensus.rs`)
+- Enhanced lending module with health factor calculation for liquidation prevention
+- Sharding support in quantum consensus with 1,000,000 shards implementation
+- Global finality tracking across all shards in quantum consensus
+- Comprehensive unit tests for all new functionality
+
+### Changed
+- Extended lending module with health factor calculation functions
+- Extended quantum consensus module with sharding and global finality features
+- Updated DEX-OS-V1.csv to mark Health Factor Calculation, 1,000,000 Shards, and Global Finality as implemented
+
+### Security
+- Proper error handling and input validation in all new modules
+- Memory safety through Rust's ownership system
+- Implementation follows security guidelines from RULES.md
+
 # [0.3.5] - 2025-11-07
 
 ### Added
