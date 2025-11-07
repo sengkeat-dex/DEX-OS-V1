@@ -27,3 +27,4 @@ RAMP Risk Management,AML Risk Management,Chainalysis Integration,Graph algorithm
 RAMP Risk Management,Slippage Protection,TWAP Implementation,TWAP Calculation,Algorithm Integration,/api/risk/slippage,Slippage Protection Response
 RPC Integration,JSON-RPC Schema,JSON-RPC Communication,JSON Schema,Protocol Integration,/api/rpc/schema,JSON-RPC Schema Definition
 RPC Integration,JSON-RPC Methods,JSON-RPC Endpoints,Method Definitions,Protocol Integration,/api/rpc/methods,JSON-RPC Method Definitions
+Security Layer,Defence Layers,JSON Security,Validation & Security,Defence Integration,See defence_layers_json.csv,Security and Validation Layers

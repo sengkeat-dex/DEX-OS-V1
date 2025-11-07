@@ -247,3 +247,4 @@ if (!validate(data)) {
 "DEX-OS Integration","Data Exchange","Data formats for DEX-OS/RAMP communication","See dex-os-ramp-data-exchange.json","Standardized data exchange formats",""
 "DEX-OS Integration","JSON-RPC Schema","JSON-RPC 2.0 schema for DEX-OS/RAMP communication","See dex-os-ramp-json-rpc-schema.json","Standardized JSON-RPC 2.0 schema",""
 "DEX-OS Integration","JSON-RPC Methods","JSON-RPC method definitions for DEX-OS/RAMP communication","See dex-os-ramp-json-rpc-methods.json","Standardized JSON-RPC method definitions",""
+"DEX-OS Integration","Defence Layers","Defensive layers for JSON communication","See defence_layers_json.csv","Security and validation layers for JSON data",""
